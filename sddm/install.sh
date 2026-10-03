@@ -76,7 +76,7 @@ timefmt="$(setting time.format)"
 [[ -n "$timefmt" ]] && sed -i "s|^timeFormat=.*|timeFormat=$timefmt|" "$STAGE/theme.conf"
 
 if ((PREVIEW)); then
-  say "preview (Esc or close the window to quit; logging in does nothing here)"
+  say "preview: close the window to quit (it is fullscreen: your close-window key); logging in does nothing here"
   sddm-greeter-qt6 --test-mode --theme "$STAGE"
   exit 0
 fi
