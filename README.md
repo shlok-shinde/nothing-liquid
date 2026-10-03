@@ -109,6 +109,14 @@ background:
 
 Floating windows sit on a big soft shadow.
 
+Apps follow the shell's light/dark switch too: Qt and KDE apps through their
+colour scheme, GTK apps through GNOME's settings and their `settings.ini`, and
+Firefox, Electron and GTK4 apps through the GTK portal. Two things on a system
+break that, and `install.sh` warns about both: a masked
+`xdg-desktop-portal-gtk` (`systemctl --user unmask xdg-desktop-portal-gtk.service`)
+and a session-wide `GTK_THEME` (often in `/etc/environment`), which pins every
+GTK app to one theme.
+
 ## Magic lamp
 
 The dock icons work like taskbar buttons, through the lamp:
@@ -168,9 +176,9 @@ Lock screen > "Use Hyprlock (instead of Quickshell)".
 
 The login screen (`sddm/`) is the same design as an SDDM theme (Qt 6, SDDM
 0.21+): the same glass, your wallpaper and fonts copied in (SDDM can't read
-your home folder). On both, the glass under the controls follows light or
-dark mode; the login screen takes the mode you are in when you install it, so
-reinstall it after switching.
+your home folder). On both, the glass under the controls follows the shell's
+light/dark switch: the installer hands you `/var/lib/nothing-liquid/login-screen.conf`,
+which the switch rewrites and the theme reads as `theme.conf.user`.
 
 ```
 sddm/install.sh --preview    # try it in a window; installs nothing

@@ -9,13 +9,16 @@
 #   sddm/install.sh --uninstall  switch back to the theme you had and remove it
 #
 # Your wallpaper is taken from the shell's config; pass another image to use that.
-# The glass follows your current light or dark mode: reinstall after switching.
+# The glass follows the shell's light/dark switch: the switch rewrites
+# /var/lib/nothing-liquid/login-screen.conf (yours), which the theme reads as
+# theme.conf.user over theme.conf.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$HERE")"
 II="$ROOT/dots/dots/.config/quickshell/ii"
 DEST=/usr/share/sddm/themes/nothing-liquid
+MODE_FILE=/var/lib/nothing-liquid/login-screen.conf
 CONF=/etc/sddm.conf
 SHELL_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/illogical-impulse/config.json"
 
@@ -30,7 +33,7 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   say "switching the login screen back to $previous"
   sudo sed -i "s/^Current=.*/Current=$previous/" "$CONF"
   sudo rm -f /etc/sddm.conf.d/10-nothing-liquid.conf
-  sudo rm -rf "$DEST"
+  sudo rm -rf "$DEST" "$(dirname "$MODE_FILE")"
   say "done"
   exit 0
 fi
@@ -102,6 +105,12 @@ sudo mkdir -p "$DEST"
 sudo cp -r "$STAGE/." "$DEST/"
 [[ -n "$previous" ]] && echo "$previous" | sudo tee "$DEST/.previous-theme" >/dev/null
 sudo chmod -R a+rX "$DEST"
+
+say "letting the shell's light/dark switch set the login screen's mode ($MODE_FILE)"
+sudo install -d -m 755 "$(dirname "$MODE_FILE")"
+[[ -O "$MODE_FILE" ]] || sudo install -m 644 -o "${SUDO_USER:-$USER}" /dev/null "$MODE_FILE"
+printf '[General]\nmode=%s\n' "${mode:-dark}" > "$MODE_FILE"
+sudo ln -sfn "$MODE_FILE" "$DEST/theme.conf.user"
 
 say "making it the login screen (undo goes back to: ${previous:-the default})"
 if grep -q '^Current=' "$CONF" 2>/dev/null; then

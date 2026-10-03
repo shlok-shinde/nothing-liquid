@@ -166,3 +166,14 @@ pkill -USR1 -x kitty 2>/dev/null || true   # open kitty windows re-read kitty.co
 say "done. Windows are glass where apps draw see-through: kitty and foot now, Dolphin and other Qt apps once reopened."
 say "SUPER+H minimizes into the dock, SUPER+SHIFT+H brings it back. Click glass to light it."
 say "originals: $ORIG   (undo: ./uninstall.sh)"
+
+# ── 5. does light/dark reach the apps? ──────────────────────────────────────
+# The shell's switch sets GNOME's colour scheme. Firefox, Electron and GTK4 apps
+# read it through the GTK portal; a session-wide GTK_THEME pins GTK apps to one
+# theme (and to Adwaita's light one when that theme isn't installed).
+if [[ "$(systemctl --user is-enabled xdg-desktop-portal-gtk.service 2>/dev/null)" == masked ]]; then
+  warn "xdg-desktop-portal-gtk is masked, so apps never hear light/dark. Fix: systemctl --user unmask xdg-desktop-portal-gtk.service"
+fi
+if [[ -n "${GTK_THEME:-}" ]]; then
+  warn "GTK_THEME=$GTK_THEME is set for the whole session (look in /etc/environment), so GTK apps ignore light/dark. Remove it and log in again"
+fi
