@@ -108,15 +108,23 @@ Floating windows sit on a big soft shadow.
 
 ## Magic lamp
 
-`SUPER+H` pours the focused window into its own dock icon; clicking the icon
-(or `SUPER+SHIFT+H`) brings it back out. The warp is a Hyprland window
-transformer (`hyprglass/src/Genie.cpp`, `genie.frag`); minimized windows wait on
+The dock icons work like taskbar buttons, through the lamp:
+
+- an app that isn't open opens out of its icon
+- clicking the icon of the window in front pours it back into the icon
+- a window behind others comes to the front; a minimized one comes back out
+
+`SUPER+H` minimizes the focused window into its icon and `SUPER+SHIFT+H`
+brings the last one back. The warp is a Hyprland window transformer
+(`hyprglass/src/Genie.cpp`, `genie.frag`); minimized windows wait on
 `special:minimized`. Also scriptable:
 
 ```
 hyprctl hyprglass minimize [address:0x…] [x y w h] [ms]
 hyprctl hyprglass restore  [address:0x…] [x y w h] [ms]
+hyprctl hyprglass launch <class[,class…]> x y w h [timeout_ms]   # its next window opens out of the rect
 hyprctl hyprglass minimized
+qs -c ii ipc call genie clickApp <app-id>    # what a click on its dock icon does
 qs -c ii ipc call genie minimizeActive | restoreLast | restoreApp <app-id>
 
 hyprctl hyprglass touch X Y [hold_ms]       # light the glass as if pressed there
@@ -173,6 +181,9 @@ sddm/install.sh --uninstall  # back to the theme you had
 - the current workspace and the bar glyph use the red
 - the power menu's tiles are glass over a dimmed desktop (the dim is its own
   window under the menu, `quickshell:sessionScrim`)
+- tray menus are glass layers of their own (`quickshell:trayMenu`: the plugin
+  can't reach a popup of the bar), and a tray icon your icon theme lacks shows
+  as a Material symbol instead of the missing-icon checkerboard
 - `services/Genie.qml` + dock icons register as lamp targets
 - `hypr/hyprland/liquidglass.lua`: loads the plugin, per-panel presets, keybinds,
   spring motion curves for windows, layers and workspaces
