@@ -51,6 +51,9 @@ and compresses what is behind it. On top of that:
 - dark mode is smoked: what is behind a pane shows through a little darker
   (Tahoe's dark tint), and a bright backdrop is pulled down toward a ceiling
   so white text stays readable on any wallpaper or window
+- light mode is the mirror, milky: a dark backdrop is lifted toward a floor
+  so dark text stays readable. The glass follows the shell's light/dark
+  switch on its own, live (`default_theme`, handed over with the settings)
 - shell panels cast a soft shadow, which keeps them distinct over bright backdrops
 - materialize: the lensing ramps in with the pane's alpha instead of a cross-fade
 
@@ -140,8 +143,11 @@ talks to it over the Agent Client Protocol (`services/Hermes.qml`).
 
 - replies stream in; reasoning folds into a think block; tool calls and the
   agent's plan show inline (click a tool call for the command and result)
-- when Hermes asks before doing something, its options appear as buttons;
-  Stop (or `Esc`) cancels the turn
+- when Hermes asks before doing something, its options appear as buttons
+  (and a notification, if the sidebar is closed); Stop (or `Esc`) cancels
+  the turn. File edits ask by default; commands ask according to Hermes'
+  `approvals.mode` (`smart` lets routine ones through), which is one setting
+  for all of Hermes: `hermes config set approvals.mode smart|manual|off`
 - `/new`, `/resume` (earlier chats), `/model` (for this chat), `/stop`; any
   other `/command` goes to Hermes (`/help` lists them)
 - each chat is a Hermes session (`hermes sessions`), and the last one comes
@@ -162,7 +168,9 @@ Lock screen > "Use Hyprlock (instead of Quickshell)".
 
 The login screen (`sddm/`) is the same design as an SDDM theme (Qt 6, SDDM
 0.21+): the same glass, your wallpaper and fonts copied in (SDDM can't read
-your home folder).
+your home folder). On both, the glass under the controls follows light or
+dark mode; the login screen takes the mode you are in when you install it, so
+reinstall it after switching.
 
 ```
 sddm/install.sh --preview    # try it in a window; installs nothing

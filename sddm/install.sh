@@ -9,6 +9,7 @@
 #   sddm/install.sh --uninstall  switch back to the theme you had and remove it
 #
 # Your wallpaper is taken from the shell's config; pass another image to use that.
+# The glass follows your current light or dark mode: reinstall after switching.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -74,6 +75,16 @@ fi
 
 timefmt="$(setting time.format)"
 [[ -n "$timefmt" ]] && sed -i "s|^timeFormat=.*|timeFormat=$timefmt|" "$STAGE/theme.conf"
+
+# Light or dark, as the desktop is now (the shell's generated colours)
+mode="$(python3 - "${XDG_STATE_HOME:-$HOME/.local/state}/quickshell/user/generated/colors.json" <<'EOF' 2>/dev/null || true
+import json, sys
+bg = json.load(open(sys.argv[1]))["background"].lstrip("#")
+r, g, b = (int(bg[i:i + 2], 16) / 255 for i in (0, 2, 4))
+print("light" if 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.5 else "dark")
+EOF
+)"
+[[ -n "$mode" ]] && sed -i "s|^mode=.*|mode=$mode|" "$STAGE/theme.conf"
 
 if ((PREVIEW)); then
   say "preview: close the window to quit (it is fullscreen: your close-window key); logging in does nothing here"

@@ -14,8 +14,11 @@ Rectangle {
     height: 1080
     color: "black"
 
-    readonly property color fg: "#f2f2f2"
-    readonly property color dim: Qt.rgba(1, 1, 1, 0.6)
+    // The controls' glass follows the desktop's mode: smoked in dark, milky in
+    // light. The clock and date sit on the wallpaper and stay as they are.
+    readonly property bool light: config.mode === "light"
+    readonly property color fg: light ? "#1b1b1b" : "#f2f2f2"
+    readonly property color dim: light ? Qt.rgba(0, 0, 0, 0.55) : Qt.rgba(1, 1, 1, 0.6)
     readonly property string dots: dotFont.status === FontLoader.Ready ? dotFont.name : "monospace"
     readonly property string icons: "Material Symbols Rounded"
     property int userIndex: Math.max(userModel.lastIndex, 0)
@@ -149,6 +152,11 @@ Rectangle {
             anchors.fill: parent
             backdrop: backdropItem
             mapTick: islands.x + islands.y + shakeOffset.x
+            brightness: root.light ? 1.03 : 0.8
+            adaptiveDim: root.light ? 0 : 0.8
+            adaptiveBoost: root.light ? 0.85 : 0
+            tint: root.light ? Qt.rgba(0.98, 0.98, 0.99, 0.45) : Qt.rgba(0.04, 0.04, 0.05, 0.25)
+            shadow: root.light ? 0.2 : 0.28
             Rectangle {
                 anchors.fill: parent
                 radius: height / 2
@@ -172,7 +180,7 @@ Rectangle {
         Rectangle {
             anchors.fill: parent
             radius: width / 2
-            color: button.filled ? "white" : Qt.rgba(1, 1, 1, area.containsMouse ? 0.14 : 0)
+            color: button.filled ? root.fg : root.light ? Qt.rgba(0, 0, 0, area.containsMouse ? 0.08 : 0) : Qt.rgba(1, 1, 1, area.containsMouse ? 0.14 : 0)
             Behavior on color {
                 ColorAnimation {
                     duration: 120
@@ -183,7 +191,7 @@ Rectangle {
             anchors.centerIn: parent
             font.family: root.icons
             font.pixelSize: 22
-            color: button.filled ? "#111111" : root.fg
+            color: button.filled ? (root.light ? "#f2f2f2" : "#111111") : root.fg
             text: button.icon
         }
         MouseArea {
@@ -255,7 +263,7 @@ Rectangle {
                 font.pixelSize: 15
                 color: root.fg
                 placeholderText: root.failed ? "Incorrect password" : (keyboard.capsLock ? "Password (Caps Lock is on)" : "Password")
-                placeholderTextColor: root.failed ? "#ff8a8a" : root.dim
+                placeholderTextColor: root.failed ? (root.light ? "#c62828" : "#ff8a8a") : root.dim
                 background: null
                 focus: true
                 onTextEdited: root.failed = false
