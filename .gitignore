@@ -1,9 +1,7 @@
 # local working screenshots and recordings (curated ones live in docs/media)
 shots/
-# the test bench's isolated home, logs and old plugin builds
-sandbox/home/
-sandbox/logs/
-sandbox/builds/
+# the local nested-Hyprland test bench
+sandbox/
 # local build/debug leftovers
 *.log
 *.patch

@@ -1,10 +1,12 @@
 # Nothing Liquid
 
-Liquid glass in the spirit of macOS Tahoe (real refraction, a magic-lamp
-minimize, light that only appears where you touch the glass), with Nothing OS's
-dot-matrix type and one-red accent, on top of
-[end-4's illogical-impulse](https://github.com/end-4/dots-hyprland) shell for
-Hyprland 0.56.
+A Hyprland rice that brings macOS Tahoe's Liquid Glass to Linux: real
+refraction on every window and panel, a magic-lamp (genie) minimize, and light
+that only appears where you touch the glass, with Nothing OS's dot-matrix type
+and one-red accent. Built on
+[end-4's illogical-impulse](https://github.com/end-4/dots-hyprland) dotfiles
+(Quickshell) for Hyprland 0.56, with a fork of the
+[hyprglass](https://github.com/hyprnux/hyprglass) plugin.
 
 ![Glass windows on a bright wallpaper: the lens magnifies what is behind them](docs/media/windows-body-lens.png)
 
@@ -23,7 +25,6 @@ Clips: [touch light](docs/media/touch-light.mp4) ·
 | `dots/` | submodule: fork of [end-4/dots-hyprland](https://github.com/end-4/dots-hyprland), branch `nothing-liquid` |
 | `hyprglass/` | submodule: fork of [hyprnux/hyprglass](https://github.com/hyprnux/hyprglass), branch `nothing-liquid` |
 | `install.sh` / `uninstall.sh` | apply to / remove from your live `~/.config`, with backups |
-| `sandbox/` | nested-Hyprland test bench (isolated HOME, never touches the real one) |
 | `docs/media/` | screenshots and clips |
 
 ## How the glass works
