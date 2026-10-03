@@ -83,14 +83,16 @@ fi
 
 # ── install ─────────────────────────────────────────────────────────────────
 previous="$(current_theme)"
+# Reinstalling: the theme to go back to is the one recorded the first time
+[[ "$previous" == nothing-liquid ]] && previous="$(cat "$DEST/.previous-theme" 2>/dev/null || true)"
 say "installing the theme to $DEST (sudo)"
 sudo rm -rf "$DEST"
 sudo mkdir -p "$DEST"
 sudo cp -r "$STAGE/." "$DEST/"
-[[ -n "$previous" && "$previous" != nothing-liquid ]] && echo "$previous" | sudo tee "$DEST/.previous-theme" >/dev/null
+[[ -n "$previous" ]] && echo "$previous" | sudo tee "$DEST/.previous-theme" >/dev/null
 sudo chmod -R a+rX "$DEST"
 
-say "making it the login screen (was: ${previous:-the default})"
+say "making it the login screen (undo goes back to: ${previous:-the default})"
 if grep -q '^Current=' "$CONF" 2>/dev/null; then
   sudo sed -i 's/^Current=.*/Current=nothing-liquid/' "$CONF"
 else
