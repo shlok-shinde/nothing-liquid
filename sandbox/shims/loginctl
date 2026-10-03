@@ -1,0 +1,5 @@
+#!/bin/sh
+# sandbox stand-in: log the call, do nothing (keeps the nested session off the real system)
+mkdir -p "$(dirname "$0")/../logs"
+echo "$(date +%T) loginctl $*" >> "$(dirname "$0")/../logs/shim-calls.log"
+exit 0

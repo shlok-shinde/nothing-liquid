@@ -1,0 +1,8 @@
+[submodule "hyprglass"]
+	path = hyprglass
+	url = https://github.com/shlok-shinde/hyprglass.git
+	branch = nothing-liquid
+[submodule "dots"]
+	path = dots
+	url = https://github.com/shlok-shinde/dots-hyprland.git
+	branch = nothing-liquid
