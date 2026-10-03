@@ -1,0 +1,13 @@
+[SddmGreeterTheme]
+Name=Nothing Liquid
+Description=Liquid glass login screen matching the Nothing Liquid lock screen
+Author=shlok-shinde
+License=GPL-3.0
+Type=sddm-theme
+Version=1.0
+Website=https://github.com/shlok-shinde/nothing-liquid
+MainScript=Main.qml
+ConfigFile=theme.conf
+Theme-Id=nothing-liquid
+Theme-API=2.0
+QtVersion=6

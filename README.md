@@ -19,6 +19,8 @@ and one-red accent. Built on
 | ![Power menu](docs/media/power-menu-glass.png) | ![Hermes Agent in the sidebar](docs/media/hermes-sidebar.png) |
 | Power menu: glass tiles over a dimmed desktop | Hermes Agent in the sidebar |
 
+![Lock screen: the time in glass numerals over the wallpaper, glass toolbars below](docs/media/lock-screen-glass.png)
+
 Clips: [touch light](docs/media/touch-light.mp4) ·
 [magic lamp into the dock](docs/media/genie-dock.mp4) (recorded with an earlier, lighter tuning of the glass)
 
@@ -27,6 +29,7 @@ Clips: [touch light](docs/media/touch-light.mp4) ·
 | `dots/` | submodule: fork of [end-4/dots-hyprland](https://github.com/end-4/dots-hyprland), branch `nothing-liquid` |
 | `hyprglass/` | submodule: fork of [hyprnux/hyprglass](https://github.com/hyprnux/hyprglass), branch `nothing-liquid` |
 | `install.sh` / `uninstall.sh` | apply to / remove from your live `~/.config`, with backups |
+| `sddm/` | the login screen (SDDM theme) and its installer |
 | `docs/media/` | screenshots and clips |
 
 ## How the glass works
@@ -138,6 +141,26 @@ talks to it over the Agent Client Protocol (`services/Hermes.qml`).
 - `qs -c ii ipc call hermes ask "…"` (also `newChat`, `stop`) for keybinds
 
 Without Hermes the page is end-4's own LLM chat.
+
+## Lock and login screens
+
+The glass plugin can't reach a lock surface, so for the lock screen the shell
+draws the glass itself: `LiquidGlassEffect` with `shaders/liquidglass.frag`,
+the plugin's optics as a Qt shader, shaped by any item's alpha. The lock shows
+your wallpaper with the time in glass numerals and the date in dot-matrix
+above, and the password, user and power toolbars on glass pills. This is the
+shell's own lock screen: if you use hyprlock, turn off Settings > Interface >
+Lock screen > "Use Hyprlock (instead of Quickshell)".
+
+The login screen (`sddm/`) is the same design as an SDDM theme (Qt 6, SDDM
+0.21+): the same glass, your wallpaper and fonts copied in (SDDM can't read
+your home folder).
+
+```
+sddm/install.sh --preview    # try it in a window; installs nothing
+sddm/install.sh              # install and switch to it (sudo)
+sddm/install.sh --uninstall  # back to the theme you had
+```
 
 ## Shell side (dots fork)
 
