@@ -16,6 +16,8 @@ and one-red accent. Built on
 | Launcher, readable over a bright wallpaper | Overview |
 | ![Settings](docs/media/settings-accent-refraction.png) | ![Clear and Tinted](docs/media/clear-vs-tinted.png) |
 | Settings > Liquid glass | Clear vs Tinted |
+| ![Power menu](docs/media/power-menu-glass.png) | ![Hermes Agent in the sidebar](docs/media/hermes-sidebar.png) |
+| Power menu: glass tiles over a dimmed desktop | Hermes Agent in the sidebar |
 
 Clips: [touch light](docs/media/touch-light.mp4) ·
 [magic lamp into the dock](docs/media/genie-dock.mp4) (recorded with an earlier, lighter tuning of the glass)
@@ -118,6 +120,25 @@ hyprctl hyprglass touch X Y [hold_ms]       # light the glass as if pressed ther
 hyprctl hyprglass touch-probe X Y           # would a press there light anything?
 ```
 
+## Hermes Agent in the sidebar
+
+With [Hermes Agent](https://github.com/NousResearch/hermes-agent) installed,
+the left sidebar's AI page is a chat with your own Hermes: its provider, tools,
+memory and skills, nothing configured twice. The shell runs `hermes acp` and
+talks to it over the Agent Client Protocol (`services/Hermes.qml`).
+
+- replies stream in; reasoning folds into a think block; tool calls and the
+  agent's plan show inline (click a tool call for the command and result)
+- when Hermes asks before doing something, its options appear as buttons;
+  Stop (or `Esc`) cancels the turn
+- `/new`, `/resume` (earlier chats), `/model` (for this chat), `/stop`; any
+  other `/command` goes to Hermes (`/help` lists them)
+- each chat is a Hermes session (`hermes sessions`), and the last one comes
+  back after a restart. Hermes starts the first time the sidebar opens
+- `qs -c ii ipc call hermes ask "…"` (also `newChat`, `stop`) for keybinds
+
+Without Hermes the page is end-4's own LLM chat.
+
 ## Shell side (dots fork)
 
 - `appearance.liquidGlass` in the shell config: clear surfaces, no own shadow
@@ -127,6 +148,8 @@ hyprctl hyprglass touch-probe X Y           # would a press there light anything
 - `liquidGlass.modularSidebar` (default on): the right sidebar has no panel
   slab; each card is its own glass, like Control Center
 - the current workspace and the bar glyph use the red
+- the power menu's tiles are glass over a dimmed desktop (the dim is its own
+  window under the menu, `quickshell:sessionScrim`)
 - `services/Genie.qml` + dock icons register as lamp targets
 - `hypr/hyprland/liquidglass.lua`: loads the plugin, per-panel presets, keybinds,
   spring motion curves for windows, layers and workspaces
