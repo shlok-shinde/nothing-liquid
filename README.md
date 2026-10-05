@@ -194,7 +194,10 @@ consoles: no desktop listens for them before you log in, so the installer sets
 up a small root service (`sddm/login-keys.py`, `nothing-liquid-login-keys.service`)
 that reads them from the keyboards while no graphical session is in front
 (inside Hyprland its own binds keep them), and the login screen shows the level
-on a glass pill.
+on a glass pill. Both sides step by the same amounts, set in the shell's config
+(`light.brightnessStep`, `audio.volumeStep`, in %): the session's keys go
+through the shell, which keeps a copy in `/var/lib/nothing-liquid/keys.json` for
+the login screen's service.
 
 ```
 sddm/install.sh --preview    # try it in a window; installs nothing

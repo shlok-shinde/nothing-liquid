@@ -26,10 +26,25 @@ REPEATS = {KEY_VOLUMEDOWN, KEY_VOLUMEUP, KEY_BRIGHTNESSDOWN, KEY_BRIGHTNESSUP}  
 EVENT = struct.Struct("llHHi")  # struct input_event: timeval, type, code, value
 EV_KEY = 1
 
-BRIGHTNESS_STEP = 0.05  # like the session's binds (5%)
 BRIGHTNESS_FLOOR = 0.02  # never all the way to a black screen
-VOLUME_STEP = "2%"
 OSD_FILE = "/run/nothing-liquid/login-osd"
+# The steps are the shell's (light.brightnessStep, audio.volumeStep): it keeps a copy here
+STEPS_FILE = "/var/lib/nothing-liquid/keys.json"
+DEFAULT_STEPS = {"brightnessStep": 5, "volumeStep": 2}
+
+
+def steps():
+    try:
+        with open(STEPS_FILE) as f:
+            saved = json.load(f)
+    except (OSError, ValueError):
+        saved = {}
+    result = dict(DEFAULT_STEPS)
+    for key in result:
+        value = saved.get(key)
+        if isinstance(value, (int, float)) and 0 < value <= 50:
+            result[key] = value
+    return result
 
 
 def key_capable(event_path):
@@ -102,7 +117,7 @@ def step_brightness(direction):
         top = int(f.read())
     with open(f"{path}/brightness") as f:
         now = int(f.read())
-    step = max(1, round(top * BRIGHTNESS_STEP))
+    step = max(1, round(top * steps()["brightnessStep"] / 100))
     value = min(top, max(max(1, round(top * BRIGHTNESS_FLOOR)), now + direction * step))
     with open(f"{path}/brightness", "w") as f:
         f.write(str(value))
@@ -131,7 +146,8 @@ def change_sound(code):
     if card is None:
         return None
     control = "Capture" if code == KEY_MICMUTE else "Master"
-    action = {KEY_VOLUMEUP: VOLUME_STEP + "+", KEY_VOLUMEDOWN: VOLUME_STEP + "-"}.get(code, "toggle")
+    volume_step = f'{steps()["volumeStep"]:g}%'
+    action = {KEY_VOLUMEUP: volume_step + "+", KEY_VOLUMEDOWN: volume_step + "-"}.get(code, "toggle")
     subprocess.run(["amixer", "-q", "-c", card, "sset", control, action], capture_output=True)
     level, muted = mixer_state(card, control)
     return {"kind": "microphone" if code == KEY_MICMUTE else "volume", "value": level, "muted": muted}

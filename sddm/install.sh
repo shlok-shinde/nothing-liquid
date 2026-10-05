@@ -23,6 +23,7 @@ ROOT="$(dirname "$HERE")"
 II="$ROOT/dots/dots/.config/quickshell/ii"
 DEST=/usr/share/sddm/themes/nothing-liquid
 MODE_FILE=/var/lib/nothing-liquid/login-screen.conf
+STEPS_FILE=/var/lib/nothing-liquid/keys.json # the key steps, mirrored by the shell (services/KeySteps.qml)
 KEYS_SCRIPT=/usr/local/lib/nothing-liquid/login-keys.py
 KEYS_UNIT=/etc/systemd/system/nothing-liquid-login-keys.service
 GREETER_CONF=/etc/sddm.conf.d/20-nothing-liquid-greeter.conf
@@ -120,6 +121,8 @@ sudo install -d -m 755 "$(dirname "$MODE_FILE")"
 [[ -O "$MODE_FILE" ]] || sudo install -m 644 -o "${SUDO_USER:-$USER}" /dev/null "$MODE_FILE"
 printf '[General]\nmode=%s\n' "${mode:-dark}" > "$MODE_FILE"
 sudo ln -sfn "$MODE_FILE" "$DEST/theme.conf.user"
+[[ -O "$STEPS_FILE" ]] || sudo install -m 644 -o "${SUDO_USER:-$USER}" /dev/null "$STEPS_FILE"
+python3 -c 'import json, sys; c = json.load(open(sys.argv[1])); print(json.dumps({"brightnessStep": c.get("light", {}).get("brightnessStep", 5), "volumeStep": c.get("audio", {}).get("volumeStep", 2)}))' "$SHELL_CONF" > "$STEPS_FILE" 2>/dev/null || echo '{"brightnessStep": 5, "volumeStep": 2}' > "$STEPS_FILE"
 
 say "brightness and volume keys at the login screen (nothing-liquid-login-keys.service)"
 sudo install -D -m 755 "$HERE/login-keys.py" "$KEYS_SCRIPT"
