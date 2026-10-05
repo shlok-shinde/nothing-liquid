@@ -80,10 +80,12 @@ fi
 
 # A live file is ours to replace if it is the fork point's version (untouched
 # since you forked) or any version this fork ever shipped (an earlier install).
+# Shipped includes where the branch pointed before a rebase (its reflog): a
+# personal branch rebased onto new fork commits rewrites its own commits.
 known_version() {
   local f="$1" live="$2" c
   git -C "$DOTS" show "$BASE_COMMIT:$f" 2>/dev/null | cmp -s - "$live" && return 0
-  for c in $(git -C "$DOTS" rev-list "$BASE_COMMIT..$REF" -- "$f"); do
+  for c in $(git -C "$DOTS" rev-list "$BASE_COMMIT..$REF" -- "$f") $(git -C "$DOTS" reflog --format=%H "$REF" -- 2>/dev/null | sort -u); do
     git -C "$DOTS" show "$c:$f" 2>/dev/null | cmp -s - "$live" && return 0
   done
   return 1
