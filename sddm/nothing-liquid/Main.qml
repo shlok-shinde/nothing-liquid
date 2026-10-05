@@ -297,6 +297,133 @@ Rectangle {
         }
     }
 
+    // ---- Brightness and volume ---------------------------------------------
+    // login-keys.py, the root service sddm/install.sh sets up, changes them (no
+    // desktop is listening at this screen) and writes the new level to
+    // /run/nothing-liquid/login-osd. The keys reach this screen too: read it then.
+
+    property var osd: null // { kind: brightness | volume | microphone, value, muted, seq }
+    property int osdSeq: -1
+
+    function readOsd() {
+        const request = new XMLHttpRequest();
+        request.open("GET", "file:///run/nothing-liquid/login-osd", false);
+        let state = null;
+        try {
+            request.send();
+            state = JSON.parse(request.responseText);
+        } catch (e) {
+            return false;
+        }
+        if (!state || state.seq === root.osdSeq)
+            return false;
+        root.osdSeq = state.seq;
+        root.osd = state;
+        osdIsland.shown = true;
+        osdHide.restart();
+        return true;
+    }
+    Timer { // the service may answer a moment after the key
+        id: osdRead
+        property int tries: 0
+        interval: 80
+        repeat: true
+        onTriggered: {
+            if (root.readOsd() || ++tries >= 8)
+                stop();
+        }
+    }
+    Timer {
+        id: osdHide
+        interval: 1600
+        onTriggered: osdIsland.shown = false
+    }
+    Shortcut {
+        sequences: ["Volume Up", "Volume Down", "Volume Mute", "Microphone Mute", "Monitor Brightness Up", "Monitor Brightness Down"]
+        context: Qt.ApplicationShortcut
+        autoRepeat: true
+        onActivated: {
+            osdRead.tries = 0;
+            osdRead.restart();
+        }
+    }
+    Component.onCompleted: {
+        // Remember where the counter is, so an old level doesn't pop up at startup
+        const request = new XMLHttpRequest();
+        request.open("GET", "file:///run/nothing-liquid/login-osd", false);
+        try {
+            request.send();
+            root.osdSeq = JSON.parse(request.responseText).seq;
+        } catch (e) {}
+    }
+
+    Island {
+        id: osdIsland
+        property bool shown: false
+        readonly property string kind: root.osd?.kind ?? ""
+        readonly property bool muted: root.osd?.muted ?? false
+        anchors {
+            horizontalCenter: parent.horizontalCenter
+            bottom: islands.top
+            bottomMargin: 18
+        }
+        padding: 14
+        opacity: shown ? 1 : 0
+        visible: opacity > 0
+        scale: shown ? 1 : 0.92
+        Behavior on opacity {
+            NumberAnimation {
+                duration: 160
+            }
+        }
+        Behavior on scale {
+            NumberAnimation {
+                duration: 160
+                easing.type: Easing.OutCubic
+            }
+        }
+
+        Text {
+            anchors.verticalCenter: parent.verticalCenter
+            font.family: root.icons
+            font.pixelSize: 22
+            color: root.fg
+            text: osdIsland.kind === "brightness" ? "light_mode" : osdIsland.kind === "microphone" ? (osdIsland.muted ? "mic_off" : "mic") : (osdIsland.muted || (root.osd?.value ?? 0) === 0 ? "volume_off" : "volume_up")
+        }
+        Item {
+            width: 8
+            height: 1
+        }
+        Rectangle { // the level
+            anchors.verticalCenter: parent.verticalCenter
+            width: 170
+            height: 6
+            radius: 3
+            color: root.light ? Qt.rgba(0, 0, 0, 0.15) : Qt.rgba(1, 1, 1, 0.2)
+            Rectangle {
+                width: parent.width * Math.max(0, Math.min(1, (root.osd?.value ?? 0) / 100))
+                height: parent.height
+                radius: parent.radius
+                color: root.fg
+                opacity: osdIsland.muted ? 0.35 : 1
+                Behavior on width {
+                    NumberAnimation {
+                        duration: 120
+                    }
+                }
+            }
+        }
+        Item {
+            width: 10
+            height: 1
+        }
+        IslandText {
+            width: 42
+            horizontalAlignment: Text.AlignRight
+            text: osdIsland.muted ? "off" : `${root.osd?.value ?? 0}%`
+        }
+    }
+
     SequentialAnimation { // Wrong password
         id: shake
         loops: 1

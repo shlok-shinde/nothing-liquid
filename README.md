@@ -146,21 +146,30 @@ hyprctl hyprglass touch-probe X Y           # would a press there light anything
 
 With [Hermes Agent](https://github.com/NousResearch/hermes-agent) installed,
 the left sidebar's AI page is a chat with your own Hermes: its provider, tools,
-memory and skills, nothing configured twice. The shell runs `hermes acp` and
-talks to it over the Agent Client Protocol (`services/Hermes.qml`).
+memory and skills, nothing configured twice. The shell runs Hermes' own UI
+backend, `tui_gateway` (the one its TUI, desktop app and dashboard use), and
+speaks its JSON-RPC over stdio (`services/Hermes.qml`). So the sidebar gets
+what those get:
 
-- replies stream in; reasoning folds into a think block; tool calls and the
-  agent's plan show inline (click a tool call for the command and result)
-- when Hermes asks before doing something, its options appear as buttons
-  (and a notification, if the sidebar is closed); Stop (or `Esc`) cancels
-  the turn. File edits ask by default; commands ask according to Hermes'
-  `approvals.mode` (`smart` lets routine ones through), which is one setting
-  for all of Hermes: `hermes config set approvals.mode smart|manual|off`
-- `/new`, `/resume` (earlier chats), `/model` (for this chat), `/stop`; any
-  other `/command` goes to Hermes (`/help` lists them)
+- every slash command: `/` lists all of Hermes' commands and your skills,
+  with descriptions, and filters as you type (Tab completes, Enter runs, and
+  `/us` runs `/usage`). Arguments complete from Hermes (`/personality c…`,
+  subcommands); `/resume` and `/model` open pickers (chats can be deleted
+  there). What a command prints shows as a card; long output folds
+- the agent's questions: its clarify questions with their choices (one or
+  several, or your own answer), approvals for risky commands (once, for this
+  chat, always, deny), and sudo passwords or keys for skills, typed masked.
+  A notification tells you when the sidebar is closed. Commands ask
+  according to Hermes' `approvals.mode` (`smart` lets routine ones through),
+  one setting for all of Hermes: `hermes config set approvals.mode smart|manual|off`
+- replies stream in; reasoning folds into a think block; tool calls,
+  subagents and the agent's todo list show inline (click a tool call for the
+  command and result). Stop (or `Esc`) ends the turn; what you send while it
+  works follows Hermes' `busy` setting (interrupt, queue or steer)
 - each chat is a Hermes session (`hermes sessions`), and the last one comes
   back after a restart. Hermes starts the first time the sidebar opens
-- `qs -c ii ipc call hermes ask "…"` (also `newChat`, `stop`) for keybinds
+- `qs -c ii ipc call hermes ask "…"` (a message or a `/command`; also
+  `newChat`, `stop`) for keybinds
 
 Without Hermes the page is end-4's own LLM chat.
 
@@ -179,6 +188,13 @@ The login screen (`sddm/`) is the same design as an SDDM theme (Qt 6, SDDM
 your home folder). On both, the glass under the controls follows the shell's
 light/dark switch: the installer hands you `/var/lib/nothing-liquid/login-screen.conf`,
 which the switch rewrites and the theme reads as `theme.conf.user`.
+
+Brightness, volume, mute and mic-mute keys work there too, and on text
+consoles: no desktop listens for them before you log in, so the installer sets
+up a small root service (`sddm/login-keys.py`, `nothing-liquid-login-keys.service`)
+that reads them from the keyboards while no graphical session is in front
+(inside Hyprland its own binds keep them), and the login screen shows the level
+on a glass pill.
 
 ```
 sddm/install.sh --preview    # try it in a window; installs nothing

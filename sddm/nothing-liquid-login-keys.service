@@ -1,0 +1,21 @@
+[Unit]
+Description=Nothing Liquid: brightness and volume keys at the login screen and consoles
+Documentation=https://github.com/shlok-shinde/nothing-liquid
+After=systemd-logind.service
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/lib/nothing-liquid/login-keys.py
+Restart=on-failure
+RestartSec=2
+# It reads keyboards, writes the backlight and the sound card's mixer, and
+# leaves the level in /run/nothing-liquid for the login screen. Nothing else.
+RuntimeDirectory=nothing-liquid
+RuntimeDirectoryMode=0755
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+
+[Install]
+WantedBy=multi-user.target

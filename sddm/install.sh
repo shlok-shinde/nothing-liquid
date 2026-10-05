@@ -12,6 +12,10 @@
 # The glass follows the shell's light/dark switch: the switch rewrites
 # /var/lib/nothing-liquid/login-screen.conf (yours), which the theme reads as
 # theme.conf.user over theme.conf.
+#
+# It also sets up nothing-liquid-login-keys.service (login-keys.py): at the login
+# screen and on text consoles, where no desktop listens for them, it handles the
+# brightness, volume and mute keys, and the login screen shows the level.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,6 +23,9 @@ ROOT="$(dirname "$HERE")"
 II="$ROOT/dots/dots/.config/quickshell/ii"
 DEST=/usr/share/sddm/themes/nothing-liquid
 MODE_FILE=/var/lib/nothing-liquid/login-screen.conf
+KEYS_SCRIPT=/usr/local/lib/nothing-liquid/login-keys.py
+KEYS_UNIT=/etc/systemd/system/nothing-liquid-login-keys.service
+GREETER_CONF=/etc/sddm.conf.d/20-nothing-liquid-greeter.conf
 CONF=/etc/sddm.conf
 SHELL_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/illogical-impulse/config.json"
 
@@ -32,8 +39,10 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   [[ -n "$previous" ]] || die "don't know which theme to go back to ($DEST/.previous-theme is missing)"
   say "switching the login screen back to $previous"
   sudo sed -i "s/^Current=.*/Current=$previous/" "$CONF"
-  sudo rm -f /etc/sddm.conf.d/10-nothing-liquid.conf
-  sudo rm -rf "$DEST" "$(dirname "$MODE_FILE")"
+  sudo systemctl disable --now nothing-liquid-login-keys.service 2>/dev/null || true
+  sudo rm -f /etc/sddm.conf.d/10-nothing-liquid.conf "$GREETER_CONF" "$KEYS_UNIT"
+  sudo rm -rf "$DEST" "$(dirname "$MODE_FILE")" "$(dirname "$KEYS_SCRIPT")"
+  sudo systemctl daemon-reload
   say "done"
   exit 0
 fi
@@ -111,6 +120,15 @@ sudo install -d -m 755 "$(dirname "$MODE_FILE")"
 [[ -O "$MODE_FILE" ]] || sudo install -m 644 -o "${SUDO_USER:-$USER}" /dev/null "$MODE_FILE"
 printf '[General]\nmode=%s\n' "${mode:-dark}" > "$MODE_FILE"
 sudo ln -sfn "$MODE_FILE" "$DEST/theme.conf.user"
+
+say "brightness and volume keys at the login screen (nothing-liquid-login-keys.service)"
+sudo install -D -m 755 "$HERE/login-keys.py" "$KEYS_SCRIPT"
+sudo install -D -m 644 "$HERE/nothing-liquid-login-keys.service" "$KEYS_UNIT"
+# The theme reads the level the service leaves in /run/nothing-liquid
+printf '[General]\nGreeterEnvironment=QML_XHR_ALLOW_FILE_READ=1\n' | sudo install -D -m 644 /dev/stdin "$GREETER_CONF"
+sudo systemctl daemon-reload
+sudo systemctl enable nothing-liquid-login-keys.service >/dev/null 2>&1
+sudo systemctl restart nothing-liquid-login-keys.service
 
 say "making it the login screen (undo goes back to: ${previous:-the default})"
 if grep -q '^Current=' "$CONF" 2>/dev/null; then
