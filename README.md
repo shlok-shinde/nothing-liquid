@@ -74,6 +74,23 @@ text (launcher and overview, sidebars, notifications, cheatsheet, wallpaper
 picker) use `tahoe`, the same glass frostier and darker. Both are in
 `hyprglass/src/BuiltInPresets.hpp`.
 
+## Bar panels
+
+Click a chip on the bar and a glass panel drops from it (`bar/BarPopover.qml`,
+its own `quickshell:popup` layer so the glass reaches it). Click it again,
+anywhere else, or press `Esc` to close it. One is open at a time:
+
+- **resources**: CPU, memory and swap, each with its last few minutes as a
+  line, and a button for your system monitor (`apps.taskManager`)
+- **media**: what's playing, with cover, seek line and controls, and the
+  player to control when several are open. `SUPER+M` opens it too
+- **clock**: the time and date, this month's calendar (scroll for others) and
+  your to-dos (tick them off here)
+- **battery**: level, time left or to full, power draw, health, and the
+  power mode (saver, balanced, performance)
+
+On a vertical bar they open beside it.
+
 ## Settings
 
 `SUPER+I` > Quick > **Liquid glass**:
@@ -182,6 +199,14 @@ your wallpaper with the time in glass numerals and the date in dot-matrix
 above, and the password, user and power toolbars on glass pills. This is the
 shell's own lock screen: if you use hyprlock, turn off Settings > Interface >
 Lock screen > "Use Hyprlock (instead of Quickshell)".
+
+Under the clock, on glass cards: what's playing, with its controls, and the
+notifications you haven't seen yet (since you last opened the notification
+list), one card per app, newest first. An app with several stacks them: tap
+the stack to spread it out, the back pill folds it again. They can be cleared
+there; opening or answering one waits for the unlock. Settings > Interface >
+Lock screen turns either off, or keeps what notifications say off the lock
+screen (`lock.showMedia`, `lock.notifications.enable`, `.showContent`).
 
 The login screen (`sddm/`) is the same design as an SDDM theme (Qt 6, SDDM
 0.21+): the same glass, your wallpaper and fonts copied in (SDDM can't read
