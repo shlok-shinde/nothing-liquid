@@ -159,6 +159,14 @@ hyprctl hyprglass touch X Y [hold_ms]       # light the glass as if pressed ther
 hyprctl hyprglass touch-probe X Y           # would a press there light anything?
 ```
 
+## App drawer
+
+The dock's apps button (the grid of dots, at its right end) opens the search
+with every installed app under it, A to Z, in place of the workspaces; `SUPER`
+still opens search with the workspaces. Type to search as usual; `Down` goes
+from the search bar into the apps, the arrow keys move, `Enter` opens. Also
+`qs -c ii ipc call search appDrawerToggle`.
+
 ## Hermes Agent in the sidebar
 
 With [Hermes Agent](https://github.com/NousResearch/hermes-agent) installed,
