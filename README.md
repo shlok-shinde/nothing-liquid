@@ -232,6 +232,11 @@ on a glass pill. Both sides step by the same amounts, set in the shell's config
 through the shell, which keeps a copy in `/var/lib/nothing-liquid/keys.json` for
 the login screen's service.
 
+The installer also sets the power button through systemd-logind
+(`sddm/power-key.conf`): a short press puts the machine to sleep (the shell
+locks first), holding it for about 5 seconds shuts it down. Out of the box any
+press shuts down.
+
 ```
 sddm/install.sh --preview    # try it in a window; installs nothing
 sddm/install.sh              # install and switch to it (sudo)

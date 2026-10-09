@@ -16,6 +16,9 @@
 # It also sets up nothing-liquid-login-keys.service (login-keys.py): at the login
 # screen and on text consoles, where no desktop listens for them, it handles the
 # brightness, volume and mute keys, and the login screen shows the level.
+#
+# And the power button (power-key.conf, for systemd-logind): a short press
+# sleeps, holding it shuts down. Instead of shutting down on any press.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,6 +30,7 @@ STEPS_FILE=/var/lib/nothing-liquid/keys.json # the key steps, mirrored by the sh
 KEYS_SCRIPT=/usr/local/lib/nothing-liquid/login-keys.py
 KEYS_UNIT=/etc/systemd/system/nothing-liquid-login-keys.service
 GREETER_CONF=/etc/sddm.conf.d/20-nothing-liquid-greeter.conf
+POWER_KEY_CONF=/etc/systemd/logind.conf.d/10-nothing-liquid-power-key.conf
 CONF=/etc/sddm.conf
 SHELL_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/illogical-impulse/config.json"
 
@@ -41,7 +45,8 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   say "switching the login screen back to $previous"
   sudo sed -i "s/^Current=.*/Current=$previous/" "$CONF"
   sudo systemctl disable --now nothing-liquid-login-keys.service 2>/dev/null || true
-  sudo rm -f /etc/sddm.conf.d/10-nothing-liquid.conf "$GREETER_CONF" "$KEYS_UNIT"
+  sudo rm -f /etc/sddm.conf.d/10-nothing-liquid.conf "$GREETER_CONF" "$KEYS_UNIT" "$POWER_KEY_CONF"
+  sudo systemctl reload systemd-logind # the power button shuts down again
   sudo rm -rf "$DEST" "$(dirname "$MODE_FILE")" "$(dirname "$KEYS_SCRIPT")"
   sudo systemctl daemon-reload
   say "done"
@@ -132,6 +137,10 @@ printf '[General]\nGreeterEnvironment=QML_XHR_ALLOW_FILE_READ=1\n' | sudo instal
 sudo systemctl daemon-reload
 sudo systemctl enable nothing-liquid-login-keys.service >/dev/null 2>&1
 sudo systemctl restart nothing-liquid-login-keys.service
+
+say "power button: a short press sleeps, holding it shuts down ($POWER_KEY_CONF)"
+sudo install -D -m 644 "$HERE/power-key.conf" "$POWER_KEY_CONF"
+sudo systemctl reload systemd-logind
 
 say "making it the login screen (undo goes back to: ${previous:-the default})"
 if grep -q '^Current=' "$CONF" 2>/dev/null; then
