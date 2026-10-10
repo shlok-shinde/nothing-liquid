@@ -1,0 +1,840 @@
+#!/usr/bin/env python3
+"""
+The installer on the Nothing Liquid USB: puts Arch Linux and Nothing Liquid on
+a computer, next to Windows or on a whole disk, for someone who has never used
+Linux. It runs as root, full screen in the cage kiosk the USB starts
+(iso/airootfs/usr/local/bin/nothing-liquid-live-session); live/install-system.sh
+does the work, and the desktop finishes setting itself up at the first start.
+
+  nothing-liquid-live          the real thing (on the USB)
+  nothing-liquid-live --demo   every screen, with a made-up Windows laptop; no
+                               disk is touched (try it on any computer)
+
+A different keyboard layout restarts the kiosk with it (exit code 3).
+"""
+
+import glob
+import json
+import os
+import re
+import shlex
+import socket
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+
+import gi  # noqa: E402
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
+
+import nldisks  # noqa: E402
+from nlui import (ACCENTS, FONTS, SHOTS, DotProgress, Runner, RunnerUI, big_button, column,  # noqa: E402
+                  label, load_css, page, status_dot)
+
+DEMO = "--demo" in sys.argv
+ROOT = HERE.parent
+RUN = (Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "nothing-liquid/live-demo") if DEMO \
+    else Path("/run/nothing-liquid")
+RESTART = 3
+MIN_GB = nldisks.MIN_BYTES / 1e9
+STEPS = [  # what install-system.sh says it's doing, and roughly how long each takes (s)
+    ("prepare", "Getting ready", "", 3),
+    ("partition", "Making room on the disk", "Only the space you picked changes.", 8),
+    ("format", "Preparing the disk", "The new space gets its file system, with room for snapshots.", 8),
+    ("base", "Installing Arch Linux", "Downloading the system: around 1 GB. It depends on your internet.", 420),
+    ("configure", "Setting things up", "Your account, time zone, keyboard and network.", 20),
+    ("boot", "Setting up the start menu", "So the computer can start either Nothing Liquid or Windows.", 30),
+    ("snapshots", "Turning on snapshots", "A copy of the system is kept before every update, to go back to.", 10),
+    ("desktop", "Getting the desktop ready", "It finishes setting itself up the first time it starts.", 15),
+    ("finish", "Finishing", "", 5),
+]
+
+
+def size(b):
+    return f"{b / 1e12:.1f} TB" if b >= 1e12 else f"{b / 1e9:.0f} GB"
+
+
+def online():
+    for host in ("archlinux.org", "github.com"):
+        try:
+            socket.create_connection((host, 443), timeout=3).close()
+            return True
+        except OSError:
+            pass
+    return False
+
+
+def xkb_layouts():
+    """(code, name) for every keyboard layout, from xkeyboard-config's list."""
+    names = {}
+    try:
+        section = None
+        for line in open("/usr/share/X11/xkb/rules/evdev.lst"):
+            if line.startswith("!"):
+                section = line.strip()
+            elif section == "! layout" and line.strip():
+                code, _, desc = line.strip().partition(" ")
+                names[code] = desc.strip()
+    except OSError:
+        names = {"us": "English (US)"}
+    return sorted(names.items(), key=lambda kv: (kv[0] != "us", kv[1]))
+
+
+def console_keymap(xkb):
+    """The text console's keymap closest to an XKB layout (us when there's none)."""
+    special = {"gb": "uk", "ch": "de_CH-latin1", "latam": "la-latin1", "br": "br-abnt2", "ca": "cf",
+               "pt": "pt-latin1", "se": "sv-latin1", "dk": "dk-latin1", "fi": "fi", "no": "no-latin1"}
+    if xkb in special:
+        return special[xkb]
+    return xkb if glob.glob(f"/usr/share/kbd/keymaps/**/{xkb}.map.gz", recursive=True) else "us"
+
+
+def timezones():
+    try:
+        zones = subprocess.run(["timedatectl", "list-timezones"], capture_output=True, text=True).stdout.split()
+    except OSError:
+        zones = []
+    return zones or ["UTC"]
+
+
+def guess_timezone():
+    try:
+        tz = subprocess.run(["curl", "-fsS", "--max-time", "4", "https://ipapi.co/timezone"],
+                            capture_output=True, text=True).stdout.strip()
+        return tz if re.fullmatch(r"[A-Za-z_]+(/[A-Za-z0-9_+-]+)*", tz) else None
+    except OSError:
+        return None
+
+
+DEMO_DISKS = [  # a 512 GB laptop with Windows, C: shrunk to leave room, and a USB stick
+    {"path": "/dev/nvme0n1", "model": "Samsung SSD 980 512GB", "size": 512_110_190_592, "removable": False,
+     "gpt": True, "empty": False, "windows": True, "bitlocker": True, "esp": "/dev/nvme0n1p1", "ours": [],
+     "free": 150 * 1024 ** 3, "free_again": 0, "sectors": 1_000_215_216,
+     "parts": [], "layout": [(2048, 204800, "EFI system partition"), (206848, 32768, "Microsoft reserved"),
+                             (239616, 680_000_000, "Basic data partition"), (998_000_000, 1_400_000, "Recovery")]},
+]
+
+
+# ── Wi-Fi, through iwd ───────────────────────────────────────────────────────
+class WiFi:
+    """iwd's networks over D-Bus; connecting through iwctl (it takes the password
+    as an argument, so no D-Bus agent is needed)."""
+
+    def __init__(self):
+        self.bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+
+    def _objects(self):
+        reply = self.bus.call_sync("net.connman.iwd", "/", "org.freedesktop.DBus.ObjectManager",
+                                   "GetManagedObjects", None, None, Gio.DBusCallFlags.NONE, 5000, None)
+        return reply.unpack()[0]
+
+    def station(self):
+        for path, ifaces in self._objects().items():
+            if "net.connman.iwd.Station" in ifaces:
+                return path, ifaces.get("net.connman.iwd.Device", {}).get("Name", "wlan0")
+        return None, None
+
+    def scan(self):
+        path, _ = self.station()
+        if path:
+            try:
+                self.bus.call_sync("net.connman.iwd", path, "net.connman.iwd.Station", "Scan",
+                                   None, None, Gio.DBusCallFlags.NONE, 5000, None)
+            except GLib.Error:
+                pass  # already scanning
+
+    def networks(self):
+        path, _ = self.station()
+        if not path:
+            return []
+        objects = self._objects()
+        ordered = self.bus.call_sync("net.connman.iwd", path, "net.connman.iwd.Station", "GetOrderedNetworks",
+                                     None, None, Gio.DBusCallFlags.NONE, 5000, None).unpack()[0]
+        found = []
+        for net_path, strength in ordered:
+            net = objects.get(net_path, {}).get("net.connman.iwd.Network", {})
+            if net.get("Name"):
+                found.append({"name": net["Name"], "type": net.get("Type", "psk"),
+                              "connected": bool(net.get("Connected")), "bars": max(1, min(4, (strength // 100 + 100) // 15))})
+        return found
+
+    def connect(self, name, passphrase=None):
+        _, dev = self.station()
+        cmd = ["iwctl"] + (["--passphrase", passphrase] if passphrase else []) + ["station", dev, "connect", name]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=40)
+        return r.returncode == 0
+
+
+class Window(RunnerUI, Adw.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="Nothing Liquid")
+        self.demo = DEMO
+        self.xkb = os.environ.get("XKB_DEFAULT_LAYOUT") or "us"
+        self.choice = {"disk": None, "mode": None, "accent": 0, "font": 0, "login": True, "power": True,
+                       "encrypt": False}
+        self.runner = None
+        self.running = False
+        RUN.mkdir(parents=True, exist_ok=True)
+        self.nav = Adw.NavigationView()
+        self.set_content(self.nav)
+        self.nav.push(self.welcome_page())
+        self.connect("close-request", lambda *_: self.running)  # nothing to close to, in the kiosk
+        threading.Thread(target=self.prefetch, daemon=True).start()
+
+    def prefetch(self):
+        self.zones = timezones()
+        self.zone_guess = None if DEMO else guess_timezone()
+
+    def power_button(self):
+        menu = Gio.Menu()
+        menu.append("Restart", "app.restart")
+        menu.append("Shut down", "app.poweroff")
+        b = Gtk.MenuButton(icon_name="system-shutdown-symbolic", menu_model=menu, tooltip_text="Restart or shut down")
+        b.add_css_class("flat")
+        return b
+
+    def page(self, title, box, tag, **kw):
+        return page(title, box, tag, header_end=self.power_button, **kw)
+
+    # ── welcome, and the keyboard ──
+    def welcome_page(self):
+        box = column()
+        carousel = Adw.Carousel(allow_scroll_wheel=False, spacing=12)
+        for name in SHOTS:
+            path = ROOT / "docs/media" / name
+            if path.exists():
+                pic = Gtk.Picture.new_for_filename(str(path))
+                pic.set_content_fit(Gtk.ContentFit.COVER)
+                pic.set_size_request(-1, 260)
+                pic.set_overflow(Gtk.Overflow.HIDDEN)
+                pic.add_css_class("nl-shot")
+                carousel.append(pic)
+        if carousel.get_n_pages():
+            box.append(carousel)
+            box.append(Adw.CarouselIndicatorDots(carousel=carousel))
+        box.append(label("NOTHING LIQUID", "nl-title", xalign=0.5))
+        box.append(label("Let's put it on this computer. If Windows is on it, Windows stays: "
+                         "you'll pick which one to start each time the computer turns on.", "nl-lead", xalign=0.5))
+        kb = Adw.PreferencesGroup(title="Your keyboard")
+        self.layouts = xkb_layouts()
+        model = Gtk.StringList.new([f"{name} ({code})" for code, name in self.layouts])
+        combo = Adw.ComboRow(title="Keyboard layout", model=model, enable_search=True)
+        codes = [code for code, _ in self.layouts]
+        combo.set_selected(codes.index(self.xkb) if self.xkb in codes else 0)
+        combo.connect("notify::selected", lambda r, _: self.change_layout(codes[r.get_selected()]))
+        kb.add(combo)
+        test = Adw.EntryRow(title="Type here to check it")
+        kb.add(test)
+        box.append(kb)
+        start = big_button("Start")
+        start.connect("clicked", lambda *_: self.show_network())
+        box.append(start)
+        if DEMO:
+            box.append(label("Demo: nothing on this computer changes.", "caption", xalign=0.5))
+        p = self.page("Welcome", box, "welcome", header_title=False)
+        p.connect("shown", lambda *_: start.grab_focus())
+        return p
+
+    def change_layout(self, code):
+        if code == self.xkb:
+            return
+        (RUN / "xkb").write_text(code)
+        if DEMO:
+            self.xkb = code
+            return
+        self.get_application().quit_code = RESTART  # the kiosk starts again with it
+        self.get_application().quit()
+
+    # ── internet ──
+    def show_network(self):
+        if DEMO or online():
+            self.show_disks()
+            return
+        box = column()
+        box.append(label("Get online", "nl-heading"))
+        box.append(label("Installing downloads the system, so the computer needs the internet. "
+                         "A network cable works by itself; or pick your Wi-Fi.", "dim-label"))
+        group = Adw.PreferencesGroup(title="Wi-Fi")
+        box.append(group)
+        status = label("", "dim-label", xalign=0.5)
+        box.append(status)
+        rescan = Gtk.Button(label="Look again", halign=Gtk.Align.CENTER)
+        rescan.add_css_class("flat")
+        box.append(rescan)
+        p = self.page("Internet", box, "network")
+        self.nav.push(p)
+        rows = []
+        try:
+            wifi = WiFi()
+        except GLib.Error:
+            wifi = None
+
+        def fill(nets):
+            for r in rows:
+                group.remove(r)
+            rows.clear()
+            if wifi is None or wifi.station()[0] is None:
+                status.set_label("No Wi-Fi on this computer (or its driver isn't on the USB): use a network cable.")
+            elif not nets:
+                status.set_label("No networks found yet…")
+            else:
+                status.set_label("")
+            for net in nets:
+                row = Adw.ActionRow(title=net["name"], subtitle=("Connected" if net["connected"] else
+                                    {"open": "Open", "psk": "Password"}.get(net["type"], "Enterprise (not supported)")))
+                row.add_suffix(label("●" * net["bars"] + "○" * (4 - net["bars"]), "dim-label", wrap=False))
+                row.set_activatable(net["type"] in ("open", "psk"))
+                row.connect("activated", lambda _r, n=net: self.join(wifi, n, status))
+                group.add(row)
+                rows.append(row)
+            if online():
+                self.show_disks()
+
+        def refresh(*_):
+            status.set_label("Looking for networks…")
+
+            def work():
+                if wifi:
+                    wifi.scan()
+                    time.sleep(3)
+                nets = wifi.networks() if wifi and wifi.station()[0] else []
+                GLib.idle_add(fill, nets)
+            threading.Thread(target=work, daemon=True).start()
+        rescan.connect("clicked", refresh)
+        refresh()
+
+        def watch():  # a cable plugged in meanwhile
+            if self.nav.get_visible_page() is not p:
+                return False
+            if online():
+                self.show_disks()
+                return False
+            return True
+        GLib.timeout_add_seconds(4, watch)
+
+    def join(self, wifi, net, status):
+        def go(passphrase=None):
+            status.set_label(f"Connecting to {net['name']}…")
+
+            def work():
+                ok = wifi.connect(net["name"], passphrase)
+                for _ in range(10):
+                    if ok and online():
+                        break
+                    time.sleep(1)
+                GLib.idle_add(done, ok and online())
+            threading.Thread(target=work, daemon=True).start()
+
+        def done(ok):
+            if ok:
+                self.show_disks()
+            else:
+                status.set_label(f"Couldn't connect to {net['name']}. Check the password and try again.")
+        if net["type"] == "open":
+            go()
+            return
+        dialog = Adw.AlertDialog(heading=net["name"], body="The Wi-Fi password:")
+        entry = Gtk.PasswordEntry(show_peek_icon=True, activates_default=True)
+        dialog.set_extra_child(entry)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("ok", "Connect")
+        dialog.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("ok")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", lambda d, rid: rid == "ok" and go(entry.get_text()))
+        dialog.present(self)
+        entry.grab_focus()
+
+    # ── where ──
+    def show_disks(self):
+        if self.nav.find_page("disks"):
+            return
+        box = column()
+        box.append(label("Where should it go?", "nl-heading"))
+        holder = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
+        spinner = Adw.Spinner() if hasattr(Adw, "Spinner") else Gtk.Spinner(spinning=True)
+        holder.append(spinner)
+        box.append(holder)
+        nxt = big_button("Next")
+        nxt.set_sensitive(False)
+        nxt.connect("clicked", lambda *_: self.confirm_disk())
+        box.append(nxt)
+        self.disk_next = nxt
+        p = self.page("Disk", box, "disks")
+        p.connect("shown", lambda *_: nxt.get_sensitive() and nxt.grab_focus())
+        self.nav.push(p)
+
+        def fill(found):
+            holder.remove(spinner)
+            self.fill_disks(holder, found)
+            if nxt.get_sensitive():
+                nxt.grab_focus()
+        threading.Thread(target=lambda: GLib.idle_add(fill, DEMO_DISKS if DEMO else nldisks.disks()),
+                         daemon=True).start()
+
+    def fill_disks(self, holder, found):
+        first_radio = None
+        usable = 0
+        for d in found:
+            group = Adw.PreferencesGroup(title=d["model"], description=f"{d['path']} · {size(d['size'])}")
+            bar = self.disk_bar(d)
+            options = []
+            free_ok = d["gpt"] and max(d["free"], d["free_again"]) >= nldisks.MIN_BYTES
+            if free_ok:
+                room = max(d["free"], d["free_again"])
+                if d["ours"]:
+                    t, sub = "Replace the earlier Nothing Liquid", f"Uses its space and the free space: {size(room)}."
+                elif d["windows"]:
+                    t, sub = "Next to Windows", f"In the {size(room)} of free space. Windows and your files stay as they are."
+                else:
+                    t, sub = "In the free space", f"Uses the {size(room)} that's free. What's on the disk stays."
+                options.append(("free", t, sub, False))
+            if d["empty"]:
+                options.append(("whole", "Use this empty disk", f"All {size(d['size'])} of it.", False))
+            else:
+                what = "Windows and everything else on it" if d["windows"] else "Everything on it"
+                options.append(("whole", "Erase this disk", f"{what} is deleted. All {size(d['size'])} for Nothing Liquid.",
+                                True))
+            rows = [self.bar_row(bar)]
+            for mode, t, sub, danger in options:
+                row = Adw.ActionRow(title=t, subtitle=sub)
+                row.set_subtitle_lines(0)
+                radio = Gtk.CheckButton(valign=Gtk.Align.CENTER)
+                if first_radio:
+                    radio.set_group(first_radio)
+                else:
+                    first_radio = radio
+                radio.connect("toggled", self.on_disk_choice, d, mode, danger)
+                row.add_prefix(radio)
+                row.set_activatable_widget(radio)
+                if danger:
+                    row.add_css_class("error")
+                rows.append(row)
+                usable += 1
+                if mode == "free" and not self.choice["disk"]:
+                    radio.set_active(True)
+            if d["windows"] and not free_ok:
+                rows.append(self.note_row("warn", "No room next to Windows yet",
+                                          "In Windows: right-click Start › Disk Management, right-click C: › Shrink "
+                                          "Volume, and shrink it by 60 GB or more. Then start this USB again."
+                                          if d["gpt"] else "This disk uses the older MBR layout, so Linux can't go "
+                                          "next to Windows on it."))
+            if d["bitlocker"]:
+                rows.append(self.note_row("warn", "Windows uses BitLocker here",
+                                          "Have your BitLocker recovery key ready (aka.ms/myrecoverykey): Windows may "
+                                          "ask for it the next time it starts."))
+            for r in rows:
+                group.add(r)
+            holder.append(group)
+        if not found:
+            holder.append(label("No disk of 30 GB or more was found.", "error", xalign=0.5))
+        self.disk_next.set_sensitive(usable > 0 and self.choice["disk"] is not None)
+        if not self.choice["disk"] and first_radio:
+            first_radio.set_active(True)
+
+    def note_row(self, level, title, sub):
+        row = Adw.ActionRow(title=title, subtitle=sub)
+        row.set_subtitle_lines(0)
+        row.add_prefix(status_dot(level))
+        return row
+
+    def bar_row(self, bar):
+        row = Adw.PreferencesRow(activatable=False)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        for m in ("top", "bottom", "start", "end"):
+            getattr(box, f"set_margin_{m}")(12)
+        box.append(bar)
+        row.set_child(box)
+        return row
+
+    def disk_bar(self, d):
+        """The disk drawn to scale: Windows dark, other partitions grey, free space as
+        dots, an earlier Nothing Liquid red."""
+        area = Gtk.DrawingArea(content_height=22, hexpand=True)
+        total = max(d["sectors"], 1)
+
+        def draw(_a, cr, w, h):
+            fg = area.get_color()
+            r = 6
+            cr.save()
+            cr.new_sub_path()
+            for (x, y, a1, a2) in ((w - r, r, -1.5708, 0), (w - r, h - r, 0, 1.5708), (r, h - r, 1.5708, 3.1416),
+                                   (r, r, 3.1416, 4.7124)):
+                cr.arc(x, y, r, a1, a2)
+            cr.close_path()
+            cr.clip()
+            cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.06)
+            cr.paint()
+            for x in range(4, int(w), 8):  # free space: Nothing's dots
+                cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.22)
+                cr.arc(x, h / 2, 1.3, 0, 6.2832)
+                cr.fill()
+            for start, length, name in d["layout"]:
+                x0, x1 = w * start / total, max(w * (start + length) / total, w * start / total + 2)
+                if name in nldisks.OURS:
+                    cr.set_source_rgba(0.84, 0.10, 0.13, 1)
+                elif "Basic data" in name or "Microsoft" in name or "Recovery" in name:
+                    cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.55)
+                else:
+                    cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.35)
+                cr.rectangle(x0, 0, x1 - x0 - 1, h)
+                cr.fill()
+            cr.restore()
+        area.set_draw_func(draw)
+        return area
+
+    def on_disk_choice(self, radio, d, mode, danger):
+        if radio.get_active():
+            self.choice.update(disk=d, mode=mode, danger=danger)
+            self.disk_next.set_sensitive(True)
+
+    def confirm_disk(self):
+        d = self.choice["disk"]
+        if not self.choice.get("danger"):
+            self.show_you()
+            return
+        dialog = Adw.AlertDialog(heading=f"Erase {d['model']}?",
+                                 body=("Windows, its files and everything else on this disk will be deleted, and "
+                                       "can't be brought back." if d["windows"] else
+                                       "Everything on this disk will be deleted, and can't be brought back.")
+                                 + "\n\nType ERASE to confirm.")
+        entry = Gtk.Entry(activates_default=True)
+        dialog.set_extra_child(entry)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("erase", "Erase it")
+        dialog.set_response_appearance("erase", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_response_enabled("erase", False)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        entry.connect("changed", lambda e: dialog.set_response_enabled("erase", e.get_text().strip() == "ERASE"))
+        dialog.connect("response", lambda _d, rid: rid == "erase" and self.show_you())
+        dialog.present(self)
+        entry.grab_focus()
+
+    # ── you ──
+    def show_you(self):
+        if self.nav.find_page("you"):
+            self.nav.pop_to_tag("you")
+            return
+        box = column()
+        box.append(label("About you", "nl-heading"))
+        who = Adw.PreferencesGroup()
+        name = Adw.EntryRow(title="Your name")
+        user = Adw.EntryRow(title="Username (for logging in)")
+        host = Adw.EntryRow(title="This computer's name")
+        pw = Adw.PasswordEntryRow(title="Password")
+        pw2 = Adw.PasswordEntryRow(title="Password again")
+        for r in (name, user, host, pw, pw2):
+            who.add(r)
+        box.append(who)
+        more = Adw.PreferencesGroup()
+        zones = getattr(self, "zones", None) or timezones()
+        guess = getattr(self, "zone_guess", None)
+        zone = Adw.ComboRow(title="Time zone", model=Gtk.StringList.new(zones), enable_search=True)
+        start_zone = guess if guess in zones else "UTC"
+        if start_zone in zones:
+            zone.set_selected(zones.index(start_zone))
+        enc = Adw.SwitchRow(title="Encrypt Nothing Liquid",
+                            subtitle="Your files can't be read without the password, even with the disk taken out. "
+                                     "The computer asks for it every time it starts.")
+        more.add(zone)
+        more.add(enc)
+        box.append(more)
+        warn = label("", "caption", "warning")
+        warn.set_visible(False)
+        box.append(warn)
+        problem = label("", "caption", "error")
+        box.append(problem)
+        nxt = big_button("Next")
+        box.append(nxt)
+        auto = {"user": "", "host": ""}  # what was filled in for them: once they type their own, it stays
+
+        def slug(text):
+            return re.sub(r"[^a-z0-9]", "", text.lower().split(" ")[0])[:20]
+
+        def on_name(*_):
+            for row, key, value in ((user, "user", slug(name.get_text())),
+                                    (host, "host", (slug(name.get_text()) or "my") + "-pc")):
+                if row.get_text() == auto[key]:
+                    auto[key] = value
+                    row.set_text(value)
+            check()
+
+        def check(*_):
+            msg = ""
+            if not name.get_text().strip():
+                msg = "What's your name?"
+            elif not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", user.get_text()):
+                msg = "The username: small letters and numbers, starting with a letter."
+            elif not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,62}", host.get_text()):
+                msg = "The computer's name: letters, numbers and dashes."
+            elif len(pw.get_text()) < 4:
+                msg = "A password of at least 4 characters."
+            elif pw.get_text() != pw2.get_text():
+                msg = "The two passwords don't match yet."
+            problem.set_label(msg)
+            nxt.set_sensitive(not msg)
+            us_like = self.xkb in ("us", "gb", "ca", "au", "nz", "ie", "in", "za", "ph")
+            warn.set_visible(enc.get_active() and not us_like)
+            warn.set_label("With encryption, the password is typed when the computer starts, before your keyboard "
+                           "layout is loaded: there it reads as a US (QWERTY) keyboard. Pick a password whose keys "
+                           "are in the same place on both, or leave encryption off.")
+        name.connect("changed", on_name)
+        for r in (user, host, pw, pw2):
+            r.connect("changed", check)
+        enc.connect("notify::active", check)
+        check()
+
+        def go(*_):
+            self.choice.update(name=name.get_text().strip(), user=user.get_text(), host=host.get_text(),
+                               password=pw.get_text(), zone=zones[zone.get_selected()], encrypt=enc.get_active())
+            self.show_look()
+        nxt.connect("clicked", go)
+        pw2.connect("entry-activated", lambda *_: nxt.get_sensitive() and go())  # Enter, when it's all filled in
+        p = self.page("You", box, "you")
+        p.connect("shown", lambda *_: name.grab_focus())
+        self.nav.push(p)
+
+    # ── look ──
+    def show_look(self):
+        box = column()
+        box.append(label("Make it yours", "nl-heading"))
+        box.append(label("All of this can change later, in the desktop's settings.", "dim-label"))
+        g = Adw.PreferencesGroup()
+        accent = Adw.ComboRow(title="Accent colour", model=Gtk.StringList.new([a[0] for a in ACCENTS]))
+        accent.set_selected(self.choice["accent"])
+        accent.connect("notify::selected", lambda r, _: self.choice.update(accent=r.get_selected()))
+        font = Adw.ComboRow(title="Font", model=Gtk.StringList.new([f[0] for f in FONTS]))
+        font.set_selected(self.choice["font"])
+        font.connect("notify::selected", lambda r, _: self.choice.update(font=r.get_selected()))
+        login = Adw.SwitchRow(title="Glass login screen", subtitle="The login screen gets the same glass.",
+                              active=self.choice["login"])
+        login.connect("notify::active", lambda r, _: self.choice.update(login=r.get_active()))
+        power = Adw.SwitchRow(title="Power button sleeps", subtitle="A short press sleeps; hold it to shut down.",
+                              active=self.choice["power"])
+        power.connect("notify::active", lambda r, _: self.choice.update(power=r.get_active()))
+        for r in (accent, font, login, power):
+            g.add(r)
+        box.append(g)
+        nxt = big_button("Next")
+        nxt.connect("clicked", lambda *_: self.show_summary())
+        box.append(nxt)
+        p = self.page("Look", box, "look")
+        p.connect("shown", lambda *_: nxt.grab_focus())
+        self.nav.push(p)
+
+    # ── summary ──
+    def show_summary(self):
+        c = self.choice
+        d = c["disk"]
+        box = column()
+        box.append(label("Ready to install", "nl-heading"))
+        g = Adw.PreferencesGroup()
+        if c["mode"] == "free":
+            room = max(d["free"], d["free_again"])
+            disk_line = (f"Nothing Liquid goes in the {size(room)} of free space on {d['model']}. "
+                         + ("Windows and your files aren't touched." if d["windows"] else "What's there stays."))
+        elif d["empty"]:
+            disk_line = f"Nothing Liquid gets all of {d['model']} ({size(d['size'])}), which is empty."
+        else:
+            disk_line = f"{d['model']} is erased: everything on it is deleted, then it's all Nothing Liquid."
+        rows = [("Disk", disk_line),
+                ("You", f"{c['name']}, logging in as {c['user']}, on “{c['host']}”"),
+                ("Time and keyboard", f"{c['zone']} · {self.xkb} keyboard"),
+                ("Encryption", "On: the password is asked when the computer starts" if c["encrypt"] else "Off"),
+                ("Look", f"{ACCENTS[c['accent']][0]} · {FONTS[c['font']][0]}"),
+                ("After this", "The computer restarts into Nothing Liquid, which finishes setting itself up the "
+                               "first time (20 to 40 minutes, online).")]
+        for i, (t, sub) in enumerate(rows, 1):
+            row = Adw.ActionRow(title=t, subtitle=sub)
+            row.set_subtitle_lines(0)
+            row.add_prefix(label(f"{i:02d}", "nl-num", wrap=False))
+            g.add(row)
+        box.append(g)
+        go = big_button("Install", "destructive-action" if c.get("danger") else "suggested-action")
+        go.connect("clicked", lambda *_: self.install())
+        box.append(go)
+        p = self.page("Summary", box, "summary")
+        p.connect("shown", lambda *_: go.grab_focus())
+        self.nav.push(p)
+
+    # ── installing ──
+    def install(self):
+        box = column(14)
+        self.kicker = label("", "nl-kicker")
+        self.step_title = label("Starting", "nl-heading")
+        self.step_detail = label("", "dim-label")
+        self.dots = DotProgress()
+        self.elapsed = label("", "caption", "dim-label", wrap=False)
+        for w in (self.kicker, self.step_title, self.step_detail, self.dots, self.elapsed):
+            box.append(w)
+        box.append(self.make_log(300))
+        self.nav.push(self.page("Installing", box, "progress", can_pop=False))
+        self.log_path = RUN / f"install-{time.strftime('%Y%m%d-%H%M%S')}.log"
+        self.run_install()
+
+    def run_install(self):
+        c = self.choice
+        secret = RUN / "secret"
+        fd = os.open(secret, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.write(fd, c["password"].encode())
+        os.close(fd)
+        env = {
+            "NL_DISK": c["disk"]["path"], "NL_MODE": c["mode"], "NL_USER": c["user"], "NL_FULLNAME": c["name"],
+            "NL_HOST": c["host"], "NL_TZ": c["zone"], "NL_XKB": self.xkb, "NL_KEYMAP": console_keymap(self.xkb),
+            "NL_ENCRYPT": "1" if c["encrypt"] else "0", "NL_SECRET": str(secret), "NL_REPO": str(ROOT),
+            "NL_PREFS": json.dumps({"accent": ACCENTS[c["accent"]][1], "font": FONTS[c["font"]][1],
+                                    "login": c["login"], "power": c["power"]}),
+        }
+        script = HERE / "live/install-system.sh"
+        if DEMO:
+            script = HERE / "live/demo-install.sh"
+        command = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items()) + f" bash {shlex.quote(str(script))}"
+        self.step_index = 0
+        self.step_started = time.time()
+        self.started = time.time()
+        self.running = True
+        self.runner = Runner(self.log_path, self.on_line, self.on_live, lambda: self.runner.run(command),
+                             self.on_done, self.on_prompt, self.on_exit, cwd=str(ROOT))
+        self.runner.start()
+        GLib.timeout_add(500, self.tick)
+
+    def on_line(self, line):
+        m = re.fullmatch(r"@@NLSTEP (\S+)@@", line.strip())
+        if m:
+            keys = [s[0] for s in STEPS]
+            if m.group(1) in keys:
+                self.step_index = keys.index(m.group(1))
+                self.step_started = time.time()
+                _, title, detail, _ = STEPS[self.step_index]
+                self.kicker.set_label(f"STEP {self.step_index + 1} OF {len(STEPS)}")
+                self.step_title.set_label(title)
+                self.step_detail.set_label(detail)
+            return
+        super().on_line(line)
+
+    def tick(self):
+        if not self.running:
+            return False
+        total = sum(s[3] for s in STEPS)
+        done = sum(s[3] for s in STEPS[:self.step_index])
+        cur = STEPS[self.step_index][3]
+        done += cur * min(0.92, (time.time() - self.step_started) / cur)
+        self.dots.set_fraction(done / total)
+        m, s = divmod(int(time.time() - self.started), 60)
+        self.elapsed.set_label(f"{m}:{s:02d}")
+        return True
+
+    def on_done(self, code):
+        self.drop_dialog()
+        if not self.running:
+            return
+        self.running = False
+        if code == 0:
+            self.choice["password"] = ""
+            self.dots.set_fraction(1)
+            self.show_done()
+        else:
+            self.show_failed(code)
+
+    def on_exit(self):
+        if self.running:
+            self.running = False
+            self.show_failed(-1)
+
+    def show_done(self):
+        box = column(16)
+        dot = Gtk.Box(halign=Gtk.Align.CENTER)
+        dot.add_css_class("nl-dot")
+        box.append(dot)
+        box.append(label("INSTALLED", "nl-title", xalign=0.5))
+        box.append(label("Take out the USB stick, then restart.", "nl-lead", xalign=0.5))
+        g = Adw.PreferencesGroup()
+        for i, (t, sub) in enumerate([
+                ("It starts Nothing Liquid", "A menu shows for a few seconds first: Nothing Liquid, its snapshots, "
+                                             "and Windows. Pick Windows there to start Windows."),
+                ("The first start finishes the desktop", "20 to 40 minutes, online. It asks for your password once."),
+                ("If it starts Windows instead", "Restart and press the boot menu key as it turns on (often F12, F11, "
+                                                 "F9 or Esc), then pick Nothing Liquid.")], 1):
+            row = Adw.ActionRow(title=t, subtitle=sub)
+            row.set_subtitle_lines(0)
+            row.add_prefix(label(f"{i:02d}", "nl-num", wrap=False))
+            g.add(row)
+        box.append(g)
+        restart = big_button("Restart now")
+        restart.connect("clicked", lambda *_: self.power("reboot"))
+        box.append(restart)
+        p = self.page("Installed", box, "done", can_pop=False, header_title=False)
+        p.connect("shown", lambda *_: restart.grab_focus())
+        self.nav.push(p)
+
+    def show_failed(self, code):
+        box = column(16)
+        box.append(label("THAT DIDN'T WORK", "nl-title", xalign=0.5))
+        title = STEPS[self.step_index][1]
+        box.append(label(f"“{title}” stopped. Windows and the rest of the disk are as they were, apart from the "
+                         "space Nothing Liquid was going into.", "nl-lead", xalign=0.5))
+        tail = [line for line in (self.runner.recent if self.runner else []) if line.strip()][-14:]
+        if tail:
+            box.append(self.detail_box("\n".join(tail)))
+        if STEPS[self.step_index][0] == "base":
+            box.append(label("Usually that's the internet: check it and try again.", "dim-label", xalign=0.5))
+        buttons = Gtk.Box(spacing=12, halign=Gtk.Align.CENTER)
+        again = big_button("Try again")
+        again.connect("clicked", lambda *_: self.retry())
+        buttons.append(again)
+        back = big_button("Change something", "flat")
+        back.connect("clicked", lambda *_: self.nav.pop_to_tag("summary"))
+        buttons.append(back)
+        box.append(buttons)
+        box.append(label(f"The full log: {self.log_path}", "caption", "dim-label", xalign=0.5, selectable=True))
+        p = self.page("Stopped", box, "failed", can_pop=False)
+        p.connect("shown", lambda *_: again.grab_focus())
+        self.nav.push(p)
+
+    def retry(self):
+        self.nav.pop_to_tag("progress")
+        if self.runner:
+            self.runner.close()
+        self.run_install()
+
+    def power(self, what):
+        if DEMO:
+            self.get_application().quit()
+            return
+        subprocess.Popen(["systemctl", what])
+
+
+class App(Adw.Application):
+    quit_code = 0
+
+    def __init__(self):
+        super().__init__(application_id="io.github.shlok_shinde.NothingLiquid.Live",
+                         flags=Gio.ApplicationFlags.NON_UNIQUE)
+        self.connect("activate", self.on_activate)
+        for name, what in (("restart", "reboot"), ("poweroff", "poweroff")):
+            action = Gio.SimpleAction.new(name, None)
+            action.connect("activate", lambda *_a, w=what: self.window.power(w))
+            self.add_action(action)
+
+    def on_activate(self, app):
+        Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.FORCE_DARK)
+        load_css()
+        self.window = Window(self)
+        self.window.present()
+        if not DEMO:
+            self.window.maximize()
+
+
+if __name__ == "__main__":
+    if not DEMO and os.geteuid() != 0:
+        sys.exit("The USB installer runs as root, on the Nothing Liquid USB. To look at it anywhere: --demo")
+    app = App()
+    app.run([a for a in sys.argv if not a.startswith("--")])
+    sys.exit(app.quit_code)

@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# The Nothing Liquid USB's screen: the installer window, full screen in the cage
+# kiosk. A new keyboard layout picked in it restarts the kiosk with that layout
+# (the window exits with 3 and writes the layout to /run/nothing-liquid/xkb).
+mkdir -p /run/nothing-liquid
+app=/usr/share/nothing-liquid/repo/installer/nothing-liquid-live
+while :; do
+  layout="$(cat /run/nothing-liquid/xkb 2>/dev/null || echo us)"
+  # Software drawing: works on any graphics chip, before any driver of its own
+  XKB_DEFAULT_LAYOUT="$layout" WLR_RENDERER=pixman GSK_RENDERER=cairo \
+    cage -s -- python3 "$app" 2>>/run/nothing-liquid/session.log
+  code=$?
+  (( code == 3 )) && continue
+  break
+done
+cat <<'EOF'
+
+  The Nothing Liquid installer closed.
+  To open it again, type:   nothing-liquid-live-session
+  To turn the computer off: poweroff
+
+EOF

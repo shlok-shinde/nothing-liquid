@@ -1,0 +1,9 @@
+# Added to archiso's releng list (what the official Arch ISO has): the kiosk
+# and what the installer window needs
+cage
+python-gobject
+gtk4
+libadwaita
+adwaita-fonts
+git
+python

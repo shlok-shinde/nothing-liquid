@@ -9,3 +9,7 @@ sandbox/
 /.hyprglass-built-for
 # Python bytecode (the installer)
 __pycache__/
+# the USB image build (iso/build.sh)
+iso/out/
+iso/work/
+iso/work.img

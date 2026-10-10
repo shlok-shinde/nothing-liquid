@@ -1,0 +1,5 @@
+
+# Nothing Liquid: on the screen (tty1), open the installer
+if [[ -z "${WAYLAND_DISPLAY:-}" && "$(tty)" == /dev/tty1 ]]; then
+  nothing-liquid-live-session
+fi

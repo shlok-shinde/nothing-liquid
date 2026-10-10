@@ -29,7 +29,8 @@ Clips: [touch light](docs/media/touch-light.mp4) ·
 | `dots/` | submodule: fork of [end-4/dots-hyprland](https://github.com/end-4/dots-hyprland), branch `nothing-liquid` |
 | `hyprglass/` | submodule: fork of [hyprnux/hyprglass](https://github.com/hyprnux/hyprglass), branch `nothing-liquid` |
 | `install.sh` / `uninstall.sh` | apply to / remove from your live `~/.config`, with backups |
-| `installer/` | the installer window for newcomers (`get.sh` fetches and opens it) |
+| `installer/` | the installer windows: on an Arch desktop (`get.sh` fetches and opens it), and on the USB image (`nothing-liquid-live`, `live/install-system.sh`) |
+| `iso/` | the Nothing Liquid USB image (archiso: `sudo iso/build.sh`) |
 | `sddm/` | the login screen (SDDM theme) and its installer |
 | `docs/media/` | screenshots and clips |
 
@@ -264,7 +265,20 @@ sddm/install.sh --uninstall  # back to the theme you had
 
 ## Install
 
-### The easy way (new to Linux or Hyprland?)
+### On a new computer, or next to Windows
+
+Never used Linux? The Nothing Liquid USB image installs everything: a small Arch
+Linux (btrfs with snapper snapshots you can start from the boot menu, GRUB with
+Windows in it, optional encryption, nothing you didn't ask for) and then the
+desktop. Windows stays; you pick one each time the computer starts.
+**[Step by step, from Windows](docs/install-from-windows.md)**: making room,
+the USB stick, Secure Boot, the installer, removing it again.
+
+The image is built with `sudo iso/build.sh` (needs `archiso`); see
+[`iso/`](iso/) and [`installer/live/install-system.sh`](installer/live/install-system.sh)
+for what it does.
+
+### The easy way, on Arch (new to Hyprland?)
 
 On Arch Linux or a distro built on it (EndeavourOS, CachyOS, Garuda, Manjaro),
 open a terminal on your desktop, paste this and press Enter:
