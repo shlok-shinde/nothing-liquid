@@ -12,8 +12,10 @@
 #      any file you have edited yourself (unless --force). Running it again
 #      updates an earlier install.
 #   3. turns on appearance.liquidGlass in ~/.config/illogical-impulse/config.json
-#   4. swaps in the new plugin, reloads Hyprland, restarts the shell and has
-#      kitty re-read its config
+#      (starting that file if the shell hasn't written one yet)
+#   4. inside Hyprland: swaps in the new plugin, reloads Hyprland, restarts the
+#      shell and has kitty re-read its config. Run from another desktop, it
+#      leaves that desktop alone: the glass is there at the next Hyprland login
 # Your files as they were before the first install are kept in
 # ~/.local/share/nothing-liquid/original. Undo with ./uninstall.sh
 set -euo pipefail
@@ -127,19 +129,26 @@ done
 
 # ── 3. shell config ──────────────────────────────────────────────────────────
 CFG="$HOME/.config/illogical-impulse/config.json"
+CFG_REL=.config/illogical-impulse/config.json
 if [[ -f "$CFG" ]]; then
   run mkdir -p "$BACKUP/.config/illogical-impulse"
-  run cp -a "$CFG" "$BACKUP/.config/illogical-impulse/config.json"
-  if [[ ! -e "$ORIG_SEEN/.config/illogical-impulse/config.json" ]]; then
-    run mkdir -p "$ORIG/.config/illogical-impulse"; run cp -a "$CFG" "$ORIG/.config/illogical-impulse/config.json"
+  run cp -a "$CFG" "$BACKUP/$CFG_REL"
+  if [[ ! -e "$ORIG_SEEN/$CFG_REL" && ! -e "$ORIG_SEEN/.new/$CFG_REL" ]]; then
+    run mkdir -p "$ORIG/.config/illogical-impulse"; run cp -a "$CFG" "$ORIG/$CFG_REL"
   fi
-  if ((DRY)); then
-    echo "  would: set appearance.liquidGlass.enable = true in $CFG"
-  else
-    python3 - "$CFG" <<'EOF'
-import json, sys
+elif [[ ! -e "$ORIG_SEEN/$CFG_REL" && ! -e "$ORIG_SEEN/.new/$CFG_REL" ]]; then
+  # A fresh setup: the shell writes its config on its first run. Start one with
+  # the glass on (the shell fills in the rest); undo removes it again
+  run mkdir -p "$ORIG/.new/.config/illogical-impulse"; run touch "$ORIG/.new/$CFG_REL"
+fi
+if ((DRY)); then
+  echo "  would: set appearance.liquidGlass.enable = true in $CFG"
+else
+  mkdir -p "$(dirname "$CFG")"
+  python3 - "$CFG" <<'EOF'
+import json, os, sys
 path = sys.argv[1]
-cfg = json.load(open(path))
+cfg = json.load(open(path)) if os.path.exists(path) else {}
 glass = cfg.setdefault("appearance", {}).setdefault("liquidGlass", {})
 glass.setdefault("tint", 0.10)
 glass.setdefault("contentTransparency", 0.78)
@@ -147,26 +156,31 @@ glass.setdefault("accentColor", "#D71921")
 glass["enable"] = True
 json.dump(cfg, open(path, "w"), indent=2)
 EOF
-    say "enabled appearance.liquidGlass"
-  fi
+  say "enabled appearance.liquidGlass"
 fi
 
 ((DRY)) && { say "dry run: nothing changed"; exit 0; }
 [[ -d "$BACKUP" ]] && echo "$BACKUP" > "$STATE/last-backup"
 
 # ── 4. apply ─────────────────────────────────────────────────────────────────
-say "reloading Hyprland and the glass plugin, restarting the shell"
-if hyprctl plugin list 2>/dev/null | grep -q '^Plugin hyprglass'; then
-  # already running an older build: swap it (a config reload alone keeps the old one)
-  hyprctl plugin unload "$SO" >/dev/null 2>&1 || true
-  hyprctl plugin load "$SO" >/dev/null 2>&1 || true
+# Only inside Hyprland: from another desktop (the GUI installer, run from GNOME
+# or KDE) this would start the shell over that desktop
+if [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]]; then
+  say "reloading Hyprland and the glass plugin, restarting the shell"
+  if hyprctl plugin list 2>/dev/null | grep -q '^Plugin hyprglass'; then
+    # already running an older build: swap it (a config reload alone keeps the old one)
+    hyprctl plugin unload "$SO" >/dev/null 2>&1 || true
+    hyprctl plugin load "$SO" >/dev/null 2>&1 || true
+  fi
+  hyprctl reload >/dev/null || true
+  qs -c ii kill >/dev/null 2>&1 || true
+  setsid -f qs -c ii >/dev/null 2>&1 || true
+  pkill -USR1 -x kitty 2>/dev/null || true   # open kitty windows re-read kitty.conf (see-through background)
+  say "done. Windows are glass where apps draw see-through: kitty and foot now, Dolphin and other Qt apps once reopened."
+  say "SUPER+H minimizes into the dock, SUPER+SHIFT+H brings it back. Click glass to light it."
+else
+  say "done. Log in to Hyprland to see it (pick Hyprland on the login screen)."
 fi
-hyprctl reload >/dev/null || true
-qs -c ii kill >/dev/null 2>&1 || true
-setsid -f qs -c ii >/dev/null 2>&1 || true
-pkill -USR1 -x kitty 2>/dev/null || true   # open kitty windows re-read kitty.conf (see-through background)
-say "done. Windows are glass where apps draw see-through: kitty and foot now, Dolphin and other Qt apps once reopened."
-say "SUPER+H minimizes into the dock, SUPER+SHIFT+H brings it back. Click glass to light it."
 say "originals: $ORIG   (undo: ./uninstall.sh)"
 
 # ── 5. does light/dark reach the apps? ──────────────────────────────────────

@@ -42,8 +42,10 @@ say "removed the plugin"
 # a later install starts from whatever you have then
 [[ "$BACKUP" == "$STATE/original" ]] && mv "$STATE/original" "$STATE/uninstalled-$(date +%Y%m%d-%H%M%S)"
 
-hyprctl reload >/dev/null || true
-qs -c ii kill >/dev/null 2>&1 || true
-setsid -f qs -c ii >/dev/null 2>&1 || true
-pkill -USR1 -x kitty 2>/dev/null || true
+if [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]]; then   # from another desktop, leave it alone
+  hyprctl reload >/dev/null || true
+  qs -c ii kill >/dev/null 2>&1 || true
+  setsid -f qs -c ii >/dev/null 2>&1 || true
+  pkill -USR1 -x kitty 2>/dev/null || true
+fi
 say "done"

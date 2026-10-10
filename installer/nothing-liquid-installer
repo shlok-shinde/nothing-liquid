@@ -1,0 +1,1388 @@
+#!/usr/bin/env python3
+"""
+Nothing Liquid installer: a friendly window around the rice's install scripts,
+for people new to Linux and Hyprland.
+
+It keeps one terminal session of its own (a pseudo-terminal, so sudo asks for
+the password once) and runs in it, depending on what you pick:
+  - end-4's setup (dots/setup install-deps, install-setups, install-files) on a
+    computer without end-4's desktop yet,
+  - ./install.sh: the glass plugin and the fork's files,
+  - sddm/install.sh (the login screen) and the power button setting,
+  - ./uninstall.sh to take it off again.
+What those scripts ask in the terminal (sudo's password, pacman's yes / no,
+end-4's retry / exit / ignore after a failed command) comes up as a dialog.
+Everything they print is kept in ~/.cache/nothing-liquid/logs.
+
+  installer/nothing-liquid-installer            run it
+  installer/nothing-liquid-installer --demo     stand-in steps; changes nothing
+  installer/nothing-liquid-installer --dry-run  the real checks, then end-4's
+                                                steps only listed and
+                                                install.sh --dry-run
+"""
+
+import codecs
+import fcntl
+import glob
+import json
+import math
+import os
+import pty
+import re
+import shlex
+import shutil
+import signal
+import socket
+import struct
+import subprocess
+import sys
+import termios
+import threading
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
+HOME = Path.home()
+STATE = HOME / ".local/share/nothing-liquid"
+CONFIG = HOME / ".config/illogical-impulse/config.json"
+LOGS = Path(os.environ.get("XDG_CACHE_HOME") or HOME / ".cache") / "nothing-liquid/logs"
+POWER_KEY_CONF = "/etc/systemd/logind.conf.d/10-nothing-liquid-power-key.conf"
+LOGIN_THEME = Path("/usr/share/sddm/themes/nothing-liquid")
+DOTO_URL = "https://raw.githubusercontent.com/google/fonts/main/ofl/doto/Doto%5BROND%2Cwght%5D.ttf"
+HYPRLAND_TARGET = (0, 56)
+APP_ID = "io.github.shlok_shinde.NothingLiquid"  # also the desktop file's name, so docks find its icon
+RED = (0xD7 / 255, 0x19 / 255, 0x21 / 255)
+SUDO_MARK = "NL-SUDO-PASSWORD:"  # sudo's prompt in our session (SUDO_PROMPT), in any language
+
+ACCENTS = [("Nothing red", "#D71921"), ("White", "#F2F2F2"), ("Your wallpaper's colours", "")]
+FONTS = [("Clean (Google Sans Flex)", "clean"),
+         ("Dot-matrix clock and titles", "titles"),
+         ("Dot-matrix everywhere, like the screenshots", "all")]
+SHOTS = ["windows-body-lens.png", "launcher-bright-wallpaper.png", "lock-screen-glass.png", "power-menu-glass.png"]
+KEYS = [("SUPER", "Search and open apps"), ("SUPER + Enter", "Terminal"), ("SUPER + E", "Files"),
+        ("SUPER + W", "Browser"), ("SUPER + Q", "Close a window"), ("SUPER + H", "Minimize into the dock"),
+        ("CTRL + SUPER + T", "Pick a wallpaper"), ("SUPER + /", "Every shortcut")]
+
+
+# ── preferences (also run headless: --apply-prefs) ───────────────────────────
+def apply_prefs(spec):
+    """Accent and fonts into the shell's config; the shell picks it up live."""
+    prefs = json.loads(spec)
+    cfg = json.loads(CONFIG.read_text()) if CONFIG.exists() else {}
+    appearance = cfg.setdefault("appearance", {})
+    glass = appearance.setdefault("liquidGlass", {})
+    if "accent" in prefs:
+        glass["accentColor"] = prefs["accent"]
+        print(f"accent: {prefs['accent'] or 'your wallpaper colours'}")
+    font = prefs.get("font", "clean")
+    if font != "clean":
+        families = subprocess.run(["fc-list", ":", "family"], capture_output=True, text=True).stdout
+        names = {n.strip() for line in families.splitlines() for n in line.split(",")}
+        doto = next((n for n in ("Doto Black", "Doto") if n in names), None)
+        if doto:
+            keys = ("title", "numbers", "expressive") if font == "titles" else \
+                   ("main", "title", "numbers", "expressive", "monospace")
+            fonts = appearance.setdefault("fonts", {})
+            for k in keys:
+                fonts[k] = doto
+            print(f"fonts: {', '.join(keys)} in {doto}")
+        else:
+            print("the dot-matrix font isn't installed, so the fonts stay as they are")
+    CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG.write_text(json.dumps(cfg, indent=2))
+
+
+if len(sys.argv) > 2 and sys.argv[1] == "--apply-prefs":
+    apply_prefs(sys.argv[2])
+    sys.exit(0)
+
+try:
+    import gi
+    gi.require_version("Gtk", "4.0")
+    gi.require_version("Adw", "1")
+    from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
+except (ImportError, ValueError) as e:
+    sys.exit(f"The installer needs GTK 4 and libadwaita for Python ({e}).\n"
+             "Install them with:  sudo pacman -S --needed python-gobject gtk4 libadwaita")
+
+DEMO = "--demo" in sys.argv
+DRY = "--dry-run" in sys.argv
+
+
+# ── what this computer has ───────────────────────────────────────────────────
+def out(cmd, timeout=10):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def version(text, pattern):
+    m = re.search(pattern, text, re.M)
+    return tuple(int(x) for x in m.group(1).split(".")) if m else None
+
+
+def vstr(v):
+    return ".".join(map(str, v)) if v else ""
+
+
+def reachable(host):
+    try:
+        socket.create_connection((host, 443), timeout=4).close()
+        return True
+    except OSError:
+        return False
+
+
+def detect():
+    s = {}
+    release = {}
+    try:
+        for line in open("/etc/os-release"):
+            k, _, v = line.strip().partition("=")
+            release[k] = v.strip('"')
+    except OSError:
+        pass
+    s["distro"] = release.get("PRETTY_NAME") or release.get("NAME") or "Linux"
+    ids = (release.get("ID", "") + " " + release.get("ID_LIKE", "")).split()
+    s["arch"] = "arch" in ids or shutil.which("pacman") is not None
+    s["root"] = os.geteuid() == 0
+    s["online"] = reachable("github.com") or reachable("archlinux.org")
+    s["free_root"] = shutil.disk_usage("/").free / 1e9
+    s["hypr_installed"] = version(out(["Hyprland", "--version"]), r"Hyprland\s+(\d+\.\d+(?:\.\d+)?)")
+    s["hypr_repo"] = version(out(["pacman", "-Si", "hyprland"]), r"^Version\s*:\s*(\d+\.\d+(?:\.\d+)?)")
+    vendors = {"0x10de": "NVIDIA", "0x8086": "Intel", "0x1002": "AMD"}
+    s["gpus"] = []
+    for path in sorted(glob.glob("/sys/class/drm/card[0-9]*/device/vendor")):
+        try:
+            name = vendors.get(open(path).read().strip(), "Other")
+        except OSError:
+            continue
+        if name not in s["gpus"]:
+            s["gpus"].append(name)
+    s["nvidia_driver"] = os.path.isdir("/sys/module/nvidia") or bool(out(["pacman", "-Q", "nvidia-utils"]))
+    s["end4"] = (HOME / ".config/quickshell/ii/shell.qml").exists()
+    s["nl"] = (HOME / ".local/lib/nothing-liquid/hyprglass.so").exists() or (STATE / "original").exists()
+    dm = os.path.basename(os.path.realpath("/etc/systemd/system/display-manager.service"))
+    s["dm"] = dm[:-len(".service")] if dm.endswith(".service") else None
+    s["login_theme"] = LOGIN_THEME.exists()
+    s["power_key"] = os.path.exists(POWER_KEY_CONF)
+    s["in_hyprland"] = bool(os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"))
+    s["kde"] = "KDE" in os.environ.get("XDG_CURRENT_DESKTOP", "") or shutil.which("plasmashell") is not None
+    s["build_tools"] = all(shutil.which(x) for x in ("make", "g++", "pkg-config")) and os.path.isdir("/usr/include/hyprland")
+    s["doto"] = "doto" in out(["fc-list", ":", "family"]).lower()
+    return s
+
+
+@dataclass
+class Check:
+    title: str
+    level: str  # ok | info | warn | fail
+    detail: str
+
+
+def checks(s):
+    c = []
+    if s["arch"]:
+        c.append(Check("Arch-based Linux", "ok", f"{s['distro']}"))
+    else:
+        c.append(Check("Arch-based Linux", "fail",
+                       f"Nothing Liquid installs its parts with pacman, on Arch Linux and the distros built on it "
+                       f"(EndeavourOS, CachyOS, Garuda, Manjaro). {s['distro']} isn't one of them."))
+    if s["root"]:
+        c.append(Check("Your own account", "fail",
+                       "The installer is running as the administrator (root). Start it as yourself: "
+                       "it asks for your password when it needs it."))
+    c.append(Check("Internet", "ok", "Connected") if s["online"] else
+             Check("Internet", "fail", "No connection. The installer downloads the desktop: connect and check again."))
+    if s["free_root"] >= 8:
+        c.append(Check("Free space", "ok", f"{s['free_root']:.0f} GB free"))
+    else:
+        c.append(Check("Free space", "warn", f"Only {s['free_root']:.1f} GB free; a fresh install can need 8 GB."))
+    have, repo = s["hypr_installed"], s["hypr_repo"]
+    v = have or repo
+    word = "installed" if have else "will be installed"
+    if not v:
+        if s["arch"]:
+            c.append(Check("Hyprland", "warn", "Couldn't tell which Hyprland your distro offers."))
+    elif v[:2] == HYPRLAND_TARGET:
+        c.append(Check("Hyprland", "ok", f"{vstr(v)} {word}: the version Nothing Liquid is made for"))
+    elif v[:2] < HYPRLAND_TARGET:
+        c.append(Check("Hyprland", "fail" if not s["end4"] else "warn",
+                       f"{vstr(v)} {word}, but this setup needs 0.56 or newer. "
+                       "Update your system (sudo pacman -Syu) and check again."))
+    else:
+        c.append(Check("Hyprland", "warn",
+                       f"{vstr(v)} {word}. Nothing Liquid is made for 0.56: the desktop works, but the glass "
+                       "effects may not load until they're updated for this version."))
+    gpus = s["gpus"]
+    if "NVIDIA" in gpus and not s["nvidia_driver"]:
+        c.append(Check("Graphics", "warn",
+                       "An NVIDIA card without NVIDIA's driver. Hyprland needs it: install your distro's NVIDIA "
+                       "driver first (for example nvidia-open), restart, and run the installer again."))
+    elif gpus:
+        c.append(Check("Graphics", "ok", " + ".join(gpus)))
+    if s["nl"]:
+        c.append(Check("Your desktop", "info", "Nothing Liquid is installed: you can update or remove it."))
+    elif s["end4"]:
+        c.append(Check("Your desktop", "info", "end-4's desktop is installed: the glass can go on top of it."))
+    if s["dm"] == "sddm":
+        c.append(Check("Login screen", "ok", "SDDM: it can get the Nothing Liquid login screen"))
+    elif s["dm"]:
+        c.append(Check("Login screen", "info",
+                       f"{s['dm'].upper()}: the Nothing Liquid login screen needs SDDM, so yours stays as it is."))
+    return c
+
+
+# ── one terminal session for all the steps ───────────────────────────────────
+ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+MARK = re.compile(r"@@NL(DONE|READY)(?: (-?\d+))?@@")
+
+
+class Runner:
+    """A bash in a pseudo-terminal of its own. Steps run in it one after another, so
+    sudo's remembered password (kept per terminal) carries over from one to the next."""
+
+    def __init__(self, log_path, on_line, on_live, on_ready, on_done, on_prompt, on_exit):
+        self.log = open(log_path, "a", buffering=1)
+        self.on_line, self.on_live, self.on_ready = on_line, on_live, on_ready
+        self.on_done, self.on_prompt, self.on_exit = on_done, on_prompt, on_exit
+        self.pid = self.fd = None
+        self.ready = False
+        self.live = ""
+        self.carriage = False
+        self.carry = ""
+        self.line_no = 0
+        self.prompted = -1
+        self.recent = []
+        self.stall = 0
+        self.after_answer = False
+        self.finished = 0  # steps ended so far
+
+    def start(self):
+        env = dict(os.environ)
+        env.update({
+            "SUDO_PROMPT": SUDO_MARK, "TERM": "xterm-256color", "HISTFILE": "/dev/null",
+            "GIT_TERMINAL_PROMPT": "0", "PAGER": "cat", "SYSTEMD_PAGER": "", "PS1": "", "PS2": "",
+            "LANGUAGE": "", "LC_MESSAGES": "C.UTF-8", "COLUMNS": "120", "LINES": "40",
+        })
+        if "LC_ALL" in env:  # it would override LC_MESSAGES: keep it as LANG instead
+            env["LANG"] = env.pop("LC_ALL")
+        pid, fd = pty.fork()
+        if pid == 0:
+            try:
+                os.chdir(ROOT)
+                os.execvpe("bash", ["bash", "--noprofile", "--norc", "--noediting", "-i"], env)
+            finally:
+                os._exit(127)
+        self.pid, self.fd = pid, fd
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+        self.decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        GLib.io_add_watch(fd, GLib.PRIORITY_DEFAULT, GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR, self._readable)
+        self.write("stty -echo; set +m; unset PROMPT_COMMAND; "
+                   "nl_keepalive() { ( while sleep 50; do sudo -n -v 2>/dev/null || exit; done ) & NL_KEEPALIVE=$!; }; "
+                   "nl_finish() { [ -n \"${NL_KEEPALIVE:-}\" ] && kill \"$NL_KEEPALIVE\" 2>/dev/null; true; }; "
+                   "printf '@@NL%s@@\\n' READY\n")
+
+    def write(self, text):
+        if self.fd is not None:
+            os.write(self.fd, text.encode())
+
+    def run(self, command):
+        # One line: a command that reads its input must not swallow the marker
+        assert "\n" not in command
+        self.prompted = -1
+        self.write(f"{command}; printf '@@NL%s %d@@\\n' DONE $?\n")
+
+    def answer(self, text, token, secret=False):
+        """Answer the question asked on line `token`, if it's still the one waiting:
+        a late answer must never reach the shell itself (it would run as a command)."""
+        if token != self.line_no or self.fd is None:
+            return False
+        shown = self.live.rstrip()
+        if secret or SUDO_MARK in shown:
+            shown = shown.replace(SUDO_MARK, "[password]") + " ••••••"
+        elif text:
+            shown += " " + text
+        self.live, self.carriage = "", False
+        self.line_no += 1
+        self.after_answer = True  # with echo off, the answer's own newline shows as an empty line
+        self._emit(shown)
+        self.on_live("")
+        self.write(text + "\n")
+        return True
+
+    def interrupt(self):
+        """Ctrl+C, as in a terminal. When it kills the command, bash drops the rest of
+        that line, the step's end marker with it: then say it ended (130) ourselves."""
+        self.write("\x03")
+        GLib.timeout_add(1500, self._after_interrupt, self.finished)
+
+    def _after_interrupt(self, finished):
+        if self.fd is not None and finished == self.finished:
+            self.write("printf '@@NL%s %d@@\\n' DONE 130\n")
+        return False
+
+    def close(self):
+        if self.pid:
+            try:
+                os.kill(self.pid, signal.SIGHUP)
+            except OSError:
+                pass
+        if self.fd is not None:
+            try:
+                os.close(self.fd)
+            except OSError:
+                pass
+        self.fd = self.pid = None
+        self.log.close()
+
+    def _readable(self, fd, condition):
+        try:
+            data = os.read(fd, 65536)
+        except OSError:
+            data = b""
+        if not data:
+            if self.fd is not None:
+                self.fd = None
+                self.on_exit()
+            return False
+        self._feed(self.decoder.decode(data))
+        return True
+
+    def _feed(self, text):
+        text = self.carry + text
+        self.carry = ""
+        cut = text.rfind("\x1b")  # an escape sequence split between two reads
+        if cut != -1 and not ANSI.match(text, cut) and len(text) - cut < 32:
+            text, self.carry = text[:cut], text[cut:]
+        text = ANSI.sub(lambda m: m.group(0) if m.group(0) in "\r\n" else "", text)
+        for part in re.split(r"(\r\n|\n|\r)", text):
+            if part in ("\n", "\r\n"):
+                self._commit()
+            elif part == "\r":
+                self.carriage = True
+            elif part:
+                if self.carriage:  # a progress bar drawing over itself
+                    self.live, self.carriage = part, False
+                else:
+                    self.live += part
+        if self.ready:
+            self.on_live(self.live)
+            self._check_prompt()
+
+    def _commit(self):
+        line, self.live, self.carriage = self.live, "", False
+        self.line_no += 1
+        if self.after_answer:
+            self.after_answer = False
+            if not line.strip():
+                return
+        m = MARK.search(line)
+        if m:
+            before = line[:m.start()]
+            if before.strip() and self.ready:
+                self._emit(before)
+            if m.group(1) == "READY":
+                self.ready = True
+                self.on_ready()
+            else:
+                self.finished += 1
+                self.on_live("")
+                self.on_done(int(m.group(2)))
+            return
+        if not self.ready:
+            return
+        if SUDO_MARK in line:
+            line = line.replace(SUDO_MARK, "[password]").rstrip() + " ••••••"
+        self._emit(line)
+
+    def _emit(self, line):
+        self.log.write(line + "\n")
+        self.recent = (self.recent + [line])[-40:]
+        self.on_line(line)
+
+    def _check_prompt(self):
+        live = self.live.rstrip()
+        if not live or self.prompted == self.line_no:
+            return
+        if SUDO_MARK in live:
+            kind = "password"
+        elif re.search(r"\[R/e/i\]:$", live):
+            kind = "failure"
+        elif re.search(r"\[(?:Y/n|y/N|Y/N|y/n)\]:?$", live):
+            kind = "yesno"
+        else:
+            # Anything else that stops on a question: give it a moment first
+            stamp = self.stall = self.stall + 1
+            if re.search(r"[:?>]$", live):
+                GLib.timeout_add(3000, self._stalled, stamp, self.line_no, live)
+            return
+        self._prompt(kind, live)
+
+    def _stalled(self, stamp, line_no, live):
+        if stamp == self.stall and line_no == self.line_no and self.live.rstrip() == live \
+                and self.prompted != line_no:
+            self._prompt("text", live)
+        return False
+
+    def _prompt(self, kind, live):
+        self.prompted = self.line_no
+        self.on_prompt(kind, live, list(self.recent), self.line_no)
+
+
+# ── the steps ────────────────────────────────────────────────────────────────
+@dataclass
+class Step:
+    key: str
+    title: str
+    detail: str
+    command: str
+    seconds: int  # what it usually takes, for the progress
+    skippable: bool = False
+    skip_note: str = ""
+    duration: str = ""
+    started: float = 0
+    done: bool = False
+
+
+@dataclass
+class Choices:
+    mode: str = "full"  # full | overlay | update | remove
+    accent: int = 0
+    font: int = 0
+    login: bool = False
+    power: bool = True
+
+
+def demo_command(key):
+    # Stand-ins that exercise each kind of question the real steps can ask
+    return {
+        "sudo": 'for t in 1 2 3; do read -rs -p "$SUDO_PROMPT" p; echo; [ -n "$p" ] && break; '
+                'echo "Sorry, try again."; done; [ -n "$p" ] && echo "(demo: any password works)"',
+        "deps": "echo ':: Synchronizing package databases...'; sleep 1; echo ' core is up to date'; "
+                "read -p ':: Proceed with installation? [Y/n] ' a; "
+                "for i in $(seq 1 40); do printf '\\r(%2d/40) installing demo-package-%02d   [%-40s] %3d%%' "
+                "$i $i \"$(head -c $i < /dev/zero | tr '\\0' '#')\" $((i*100/40)); sleep 0.12; done; echo; "
+                "read -p ':: demo-a and demo-b are in conflict. Remove demo-b? [y/N] ' a; echo \"answer: $a\"",
+        "setups": "echo 'Command \"demo-step\" has failed.'; echo '  r = Repeat this command (DEFAULT)'; "
+                  "echo '  e = Exit now'; echo '  i = Ignore this error and continue'; read -p ' [R/e/i]: ' a; "
+                  "echo \"answer: $a\"",
+        "files": "read -p 'Enter a number (default=1): ' n; echo \"picked ${n:-1}\"; sleep 1",
+        "glass": "for f in build link strip install; do echo \"glass: $f\"; sleep 0.6; done",
+    }.get(key, "sleep 1; echo done")
+
+
+def plan(c: Choices, s):
+    q = shlex.quote
+    R, D = q(str(ROOT)), q(str(ROOT / "dots"))
+    me = q(str(Path(__file__).resolve()))
+    steps = []
+    login = c.login and s["dm"] == "sddm"
+    removing_system = c.mode == "remove" and (s["login_theme"] or s["power_key"])
+    needs_sudo = c.mode == "full" or login or (c.power and not s["power_key"]) or removing_system \
+        or (c.mode == "overlay" and not s["build_tools"]) or (c.mode == "update" and s["login_theme"])
+    if needs_sudo and not DRY:
+        steps.append(Step("sudo", "Getting permission",
+                          "Your password, once: system packages and settings need it. The rest runs on its own.",
+                          "sudo -v && nl_keepalive", 10))
+    if c.mode == "update":
+        steps.append(Step("pull", "Downloading the latest version", "Fetching what changed since your install.",
+                          f"git -C {R} pull --ff-only && git -C {R} submodule update --init --recursive", 30))
+    if c.mode == "full":
+        flags = "-f --skip-allgreeting" + ("" if s["kde"] else " --skip-plasmaintg")
+        steps += [
+            Step("deps", "Installing Hyprland and the desktop's apps",
+                 "Updating your system, then downloading Hyprland, Quickshell and the apps and fonts the desktop "
+                 "uses. Quickshell is built on your computer, so this is the long part: keep it plugged in.",
+                 f"cd {D} && bash ./setup install-deps {flags}", 1500, duration="usually 15 to 40 minutes"),
+            Step("setups", "Setting up permissions and services",
+                 "Brightness and keyboard access, and the background services the desktop talks to.",
+                 f"cd {D} && bash ./setup install-setups {flags}", 90, duration="a minute or two"),
+            Step("files", "Putting the desktop's settings in place",
+                 "Settings for Hyprland, the shell, kitty, fish and more. Your current ones are copied to "
+                 "~/ii-original-dots-backup first.",
+                 f"cd {D} && bash ./setup install-files {flags}", 40),
+        ]
+    if c.mode == "overlay" and not s["build_tools"]:
+        steps.append(Step("tools", "Installing build tools", "What it takes to build the glass for your Hyprland.",
+                          "sudo pacman -S --needed --noconfirm base-devel", 60))
+    if c.mode in ("full", "overlay", "update"):
+        steps.append(Step("glass", "Building the liquid glass",
+                          "Building the glass for your Hyprland and putting Nothing Liquid's files in place. "
+                          "Files it replaces are kept, so it can be undone.",
+                          f"cd {R} && bash ./install.sh" + (" --dry-run" if DRY else ""), 150, skippable=True,
+                          skip_note="The desktop works without the glass; run the installer again later to add it."))
+    font = FONTS[c.font][1]
+    if c.mode in ("full", "overlay"):
+        if font != "clean" and not s["doto"]:
+            steps.append(Step("font", "Getting the dot-matrix font", "Doto, from Google Fonts.",
+                              f"mkdir -p ~/.local/share/fonts && curl -fL --retry 3 -o ~/.local/share/fonts/Doto.ttf "
+                              f"{q(DOTO_URL)} && fc-cache -f ~/.local/share/fonts", 15, skippable=True,
+                              skip_note="The clean font stays instead."))
+        prefs = json.dumps({"accent": ACCENTS[c.accent][1], "font": font})
+        steps.append(Step("prefs", "Applying your choices", f"{ACCENTS[c.accent][0]} accent; {FONTS[c.font][0]}.",
+                          f"python3 {me} --apply-prefs {q(prefs)}", 3))
+    if login or (c.mode == "update" and s["login_theme"]):
+        power = int(c.power if c.mode != "update" else s["power_key"])
+        steps.append(Step("login", "Installing the login screen",
+                          "The glass login screen, with your wallpaper and the brightness and volume keys working there."
+                          + (" And the power button: a short press sleeps, holding it shuts down." if power else ""),
+                          f"NL_POWER_KEY={power} bash {R}/sddm/install.sh", 40, skippable=True,
+                          skip_note="Your current login screen stays."))
+    elif c.mode in ("full", "overlay") and c.power and not s["power_key"]:
+        steps.append(Step("power", "Setting up the power button", "A short press puts the computer to sleep; "
+                          "holding it shuts down.",
+                          f"sudo install -D -m 644 {R}/sddm/power-key.conf {POWER_KEY_CONF} && "
+                          "sudo systemctl reload systemd-logind", 5, skippable=True))
+    if c.mode == "remove":
+        steps.append(Step("uninstall", "Removing Nothing Liquid",
+                          "Putting back the files it replaced and removing the glass.", f"cd {R} && bash ./uninstall.sh", 20))
+        if s["login_theme"]:
+            steps.append(Step("login-off", "Putting your old login screen back", "And the power button as it was.",
+                              f"bash {R}/sddm/install.sh --uninstall", 20, skippable=True))
+        elif s["power_key"]:
+            steps.append(Step("power-off", "Putting the power button back", "Any press shuts down again.",
+                              f"sudo rm -f {POWER_KEY_CONF} && sudo systemctl reload systemd-logind", 5, skippable=True))
+    steps.append(Step("finish", "Finishing up", "Tidying up.", "nl_finish", 2))
+    if DEMO:
+        for st in steps:
+            st.command = demo_command(st.key) if st.key != "finish" else "nl_finish"
+            st.seconds = 8
+    elif DRY:
+        for st in steps:
+            if st.key in ("deps", "setups", "files", "tools", "font", "prefs", "login", "power",
+                          "pull", "uninstall", "login-off", "power-off"):
+                st.command = f"echo {q('would run: ' + st.command)}; sleep 1"
+    return steps
+
+
+# ── a row of dots that fills up, Nothing's way of showing progress ───────────
+class DotProgress(Gtk.DrawingArea):
+    def __init__(self, dots=28):
+        super().__init__()
+        self.dots, self.fraction, self.phase = dots, 0.0, 0.0
+        self.set_content_height(16)
+        self.set_hexpand(True)
+        self.set_draw_func(self._draw)
+        self.connect("map", lambda *_: GLib.timeout_add(60, self._tick))
+
+    def set_fraction(self, f):
+        self.fraction = max(0.0, min(1.0, f))
+        self.queue_draw()
+
+    def _tick(self):
+        self.phase += 0.12
+        self.queue_draw()
+        return self.get_mapped()
+
+    def _draw(self, area, cr, w, h):
+        n = self.dots
+        gap = w / n
+        r = min(h / 2, gap * 0.26)
+        fg = self.get_color()
+        filled = self.fraction * n
+        for i in range(n):
+            if i < int(filled):
+                cr.set_source_rgba(*RED, 1)
+            elif i == int(filled) and self.fraction < 1:
+                cr.set_source_rgba(*RED, 0.3 + 0.7 * abs(math.sin(self.phase)))
+            else:
+                cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.16)
+            cr.arc(gap * (i + 0.5), h / 2, r, 0, 2 * math.pi)
+            cr.fill()
+
+
+CSS = """
+:root { --accent-bg-color: #D71921; --accent-fg-color: white; --accent-color: #ff4a52; }
+@define-color accent_bg_color #D71921;
+@define-color accent_fg_color white;
+@define-color accent_color #ff4a52;
+.nl-title { font-family: "Doto", "Doto Black", monospace; font-weight: 900; font-size: 42px; letter-spacing: 2px; }
+.nl-heading { font-family: "Doto", "Doto Black", monospace; font-weight: 900; font-size: 26px; }
+.nl-kicker { font-family: "Doto", "Doto Black", monospace; font-weight: 900; font-size: 13px; letter-spacing: 3px; color: #D71921; }
+.nl-lead { font-size: 17px; }
+.nl-shot { border-radius: 18px; }
+.nl-log { font-family: monospace; font-size: 10.5px; background: transparent; }
+.nl-logbox { border-radius: 12px; background: alpha(currentColor, 0.05); padding: 8px; }
+.nl-key { font-family: monospace; font-weight: bold; font-size: 12px; padding: 3px 9px; border-radius: 7px;
+          background: alpha(currentColor, 0.10); }
+.nl-dot { min-width: 14px; min-height: 14px; border-radius: 99px; background: #D71921; }
+.nl-num { font-family: "Doto", "Doto Black", monospace; font-weight: 900; font-size: 15px; color: #D71921; min-width: 22px; }
+.nl-big { padding: 10px 30px; font-size: 15px; }
+.nl-status { min-width: 10px; min-height: 10px; border-radius: 99px; margin: 0 4px; }
+.nl-ok { background: alpha(currentColor, 0.85); }
+.nl-info { background: transparent; box-shadow: inset 0 0 0 2px alpha(currentColor, 0.6); }
+.nl-warn { background: #f5a623; }
+.nl-fail { background: #D71921; box-shadow: 0 0 0 3px alpha(#D71921, 0.3); }
+"""
+
+
+def label(text, *classes, wrap=True, xalign=0.0, selectable=False):
+    w = Gtk.Label(label=text, wrap=wrap, xalign=xalign, selectable=selectable)
+    w.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+    if xalign == 0.5:
+        w.set_justify(Gtk.Justification.CENTER)
+    for c in classes:
+        w.add_css_class(c)
+    return w
+
+
+def page(title, child, tag, can_pop=True, header_title=True):
+    toolbar = Adw.ToolbarView()
+    header = Adw.HeaderBar()
+    header.set_show_title(header_title)
+    toolbar.add_top_bar(header)
+    scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True)
+    clamp = Adw.Clamp(maximum_size=660, tightening_threshold=520)
+    clamp.set_child(child)
+    scroller.set_child(clamp)
+    toolbar.set_content(scroller)
+    p = Adw.NavigationPage(title=title, tag=tag, child=toolbar)
+    p.set_can_pop(can_pop)
+    return p
+
+
+def column(spacing=18):
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=spacing)
+    for m in ("top", "bottom"):
+        getattr(box, f"set_margin_{m}")(24)
+    box.set_margin_start(18)
+    box.set_margin_end(18)
+    return box
+
+
+def status_dot(level):
+    """A small dot: Nothing's way of saying ok / note / careful / no. Drawn, not an
+    icon, so it looks the same whatever icon theme the computer has."""
+    dot = Gtk.Box(valign=Gtk.Align.CENTER, halign=Gtk.Align.CENTER)
+    dot.add_css_class("nl-status")
+    dot.add_css_class(f"nl-{level}")
+    return dot
+
+
+def big_button(text, style="suggested-action"):
+    b = Gtk.Button(label=text, halign=Gtk.Align.CENTER)
+    for c in ("pill", "nl-big", style):
+        b.add_css_class(c)
+    return b
+
+
+class Window(Adw.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="Nothing Liquid", default_width=880, default_height=760)
+        self.set_size_request(380, 520)
+        self.system = None
+        self.choices = Choices()
+        self.steps = []
+        self.index = 0
+        self.runner = None
+        self.running = False
+        self.closing = False
+        self.log_path = None
+        LOGS.mkdir(parents=True, exist_ok=True)
+        self.toasts = Adw.ToastOverlay()
+        self.nav = Adw.NavigationView()
+        self.toasts.set_child(self.nav)
+        self.set_content(self.toasts)
+        self.dialog = None
+        self.nav.push(self.welcome_page())
+        self.connect("close-request", self.on_close_request)
+
+    # ── welcome ──
+    def welcome_page(self):
+        box = column()
+        carousel = Adw.Carousel(allow_scroll_wheel=False, spacing=12)
+        for name in SHOTS:
+            path = ROOT / "docs/media" / name
+            if path.exists():
+                pic = Gtk.Picture.new_for_filename(str(path))
+                pic.set_content_fit(Gtk.ContentFit.COVER)
+                pic.set_size_request(-1, 300)
+                pic.set_hexpand(True)
+                pic.set_overflow(Gtk.Overflow.HIDDEN)
+                pic.add_css_class("nl-shot")
+                carousel.append(pic)
+        if carousel.get_n_pages():
+            box.append(carousel)
+            box.append(Adw.CarouselIndicatorDots(carousel=carousel))
+            GLib.timeout_add_seconds(5, self.advance_carousel, carousel)
+        box.append(label("NOTHING LIQUID", "nl-title", xalign=0.5))
+        box.append(label("A liquid-glass desktop for Linux, with Nothing's look.", "nl-lead", xalign=0.5))
+        box.append(label(
+            "Glass panels and windows that bend the light behind them, a dock that windows pour into, and "
+            "a dot-matrix style in black, white and one red, built on Hyprland and end-4's desktop. "
+            "This installer sets it up for you and keeps a copy of your current settings.", "dim-label", xalign=0.5))
+        start = big_button("Get started")
+        start.connect("clicked", lambda *_: self.show_checks())
+        box.append(start)
+        box.append(label("It takes 20 to 40 minutes, mostly downloading. Your current desktop stays: "
+                         "you can pick it at the login screen any time.", "dim-label", "caption", xalign=0.5))
+        if DEMO or DRY:
+            box.append(label("Demo: nothing is installed or changed." if DEMO else
+                             "Dry run: the real checks, but nothing is installed or changed.",
+                             "caption", xalign=0.5))
+        p = page("Welcome", box, "welcome", header_title=False)
+        p.connect("shown", lambda *_: start.grab_focus())
+        return p
+
+    def advance_carousel(self, carousel):
+        if not carousel.get_root():
+            return False
+        n = carousel.get_n_pages()
+        if n:
+            nxt = (round(carousel.get_position()) + 1) % n
+            carousel.scroll_to(carousel.get_nth_page(nxt), True)
+        return True
+
+    # ── checks ──
+    def show_checks(self):
+        box = column()
+        box.append(label("Checking your computer", "nl-heading"))
+        box.append(label("A few things to know before anything changes.", "dim-label"))
+        group = Adw.PreferencesGroup()
+        spinner_row = Adw.ActionRow(title="Looking around…")
+        spinner_row.add_prefix(Adw.Spinner() if hasattr(Adw, "Spinner") else Gtk.Spinner(spinning=True))
+        group.add(spinner_row)
+        box.append(group)
+        status = label("", xalign=0.5)
+        status.set_visible(False)
+        box.append(status)
+        cont = big_button("Continue")
+        cont.set_sensitive(False)
+        cont.connect("clicked", lambda *_: self.show_choose())
+        box.append(cont)
+        again = Gtk.Button(label="Check again", halign=Gtk.Align.CENTER)
+        again.add_css_class("flat")
+        again.set_visible(False)
+        box.append(again)
+        p = page("Your computer", box, "checks")
+        self.nav.push(p)
+
+        def done(s):
+            if DEMO:  # walk through as a newcomer would
+                s.update(end4=False, nl=False, in_hyprland=False, login_theme=False, power_key=False)
+            self.system = s
+            group.remove(spinner_row)
+            found = checks(s)
+            for c in found:
+                row = Adw.ActionRow(title=c.title, subtitle=c.detail)
+                row.set_subtitle_lines(0)
+                row.add_prefix(status_dot(c.level))
+                group.add(row)
+            blocking = [c for c in found if c.level == "fail"]
+            if blocking and not DEMO:
+                status.set_label("Nothing Liquid can't be installed until the red ones are sorted out.")
+                status.add_css_class("error")
+                status.set_visible(True)
+                again.set_visible(True)
+            else:
+                cont.set_sensitive(True)
+                cont.grab_focus()
+
+        def rerun(*_):
+            self.nav.pop()
+            self.show_checks()
+        again.connect("clicked", rerun)
+        threading.Thread(target=lambda: GLib.idle_add(done, detect()), daemon=True).start()
+
+    # ── choose ──
+    def show_choose(self):
+        s = self.system
+        box = column()
+        box.append(label("What would you like to do?", "nl-heading"))
+        modes = []
+        if s["nl"]:
+            modes += [("update", "Update Nothing Liquid", "Get the latest version and keep your settings."),
+                      ("remove", "Remove Nothing Liquid", "Put back the files it replaced. Hyprland and end-4's "
+                                                          "desktop stay.")]
+        elif s["end4"]:
+            modes += [("overlay", "Add the glass to my desktop", "Keeps your end-4 setup and settings; adds the "
+                                                                 "glass, dock and Nothing look on top. (Recommended)"),
+                      ("full", "Install everything again", "Reinstalls end-4's desktop first. Your settings are "
+                                                           "backed up, but replaced.")]
+        else:
+            modes += [("full", "Install Nothing Liquid", "Hyprland, end-4's desktop and the glass, all set up. "
+                                                         "Your current desktop stays at the login screen.")]
+        self.choices.mode = modes[0][0]
+        pick = Adw.PreferencesGroup()
+        first = None
+        for key, title, sub in modes:
+            row = Adw.ActionRow(title=title, subtitle=sub)
+            row.set_subtitle_lines(0)
+            if len(modes) == 1:
+                row.add_prefix(status_dot("ok"))
+                pick.add(row)
+                continue
+            radio = Gtk.CheckButton(valign=Gtk.Align.CENTER)
+            if first:
+                radio.set_group(first)
+            else:
+                first = radio
+                radio.set_active(True)
+            radio.connect("toggled", self.on_mode, key)
+            row.add_prefix(radio)
+            row.set_activatable_widget(radio)
+            pick.add(row)
+        box.append(pick)
+
+        prefs = Adw.PreferencesGroup(title="Make it yours", description="You can change all of this later "
+                                     "in the desktop's settings (SUPER + I).")
+        accent = Adw.ComboRow(title="Accent colour", model=Gtk.StringList.new([a[0] for a in ACCENTS]))
+        accent.set_selected(self.choices.accent)
+        accent.connect("notify::selected", lambda r, _: setattr(self.choices, "accent", r.get_selected()))
+        font = Adw.ComboRow(title="Font", model=Gtk.StringList.new([f[0] for f in FONTS]))
+        font.set_selected(self.choices.font)
+        font.connect("notify::selected", lambda r, _: setattr(self.choices, "font", r.get_selected()))
+        prefs.add(accent)
+        prefs.add(font)
+        login = Adw.SwitchRow(title="Glass login screen")
+        if s["dm"] == "sddm":
+            login.set_subtitle("The login screen gets the same glass and your wallpaper.")
+            login.set_active(not s["login_theme"])
+        else:
+            login.set_subtitle("Needs the SDDM login manager" + (f"; you have {s['dm'].upper()}." if s["dm"] else "."))
+            login.set_sensitive(False)
+        self.choices.login = login.get_active()
+        login.connect("notify::active", lambda r, _: setattr(self.choices, "login", r.get_active()))
+        power = Adw.SwitchRow(title="Power button sleeps", subtitle="A short press puts the computer to sleep; "
+                              "hold it to shut down.", active=True)
+        if s["power_key"]:
+            power.set_subtitle("Already set up.")
+            power.set_sensitive(False)
+        power.connect("notify::active", lambda r, _: setattr(self.choices, "power", r.get_active()))
+        prefs.add(login)
+        prefs.add(power)
+        box.append(prefs)
+        self.prefs_group = prefs
+
+        nxt = big_button("Next")
+        nxt.connect("clicked", lambda *_: self.show_confirm())
+        box.append(nxt)
+        self.update_prefs_visibility()
+        p = page("Choose", box, "choose")
+        p.connect("shown", lambda *_: nxt.grab_focus())
+        self.nav.push(p)
+
+    def on_mode(self, radio, key):
+        if radio.get_active():
+            self.choices.mode = key
+            self.update_prefs_visibility()
+
+    def update_prefs_visibility(self):
+        self.prefs_group.set_visible(self.choices.mode in ("full", "overlay"))
+
+    # ── confirm ──
+    def show_confirm(self):
+        c, s = self.choices, self.system
+        self.steps = plan(c, s)
+        box = column()
+        heading = {"full": "Ready to install", "overlay": "Ready to add the glass",
+                   "update": "Ready to update", "remove": "Ready to remove"}[c.mode]
+        box.append(label(heading, "nl-heading"))
+        group = Adw.PreferencesGroup(title="What happens")
+        shown = [st for st in self.steps if st.key not in ("finish",)]
+        for i, st in enumerate(shown, 1):
+            row = Adw.ActionRow(title=st.title, subtitle=st.detail + (f" ({st.duration})" if st.duration else ""))
+            row.set_subtitle_lines(0)
+            row.add_prefix(label(f"{i:02d}", "nl-num", wrap=False))
+            group.add(row)
+        box.append(group)
+        notes = Adw.PreferencesGroup(title="Good to know")
+        tips = []
+        if any(st.key == "sudo" for st in self.steps):
+            tips.append(("You'll be asked for your password once",
+                         "The one you log in with. It goes straight to the system (sudo), never anywhere else."))
+        if c.mode == "full":
+            tips.append(("Keep it plugged in and online",
+                         "It downloads around 2 GB. You can use the computer meanwhile."))
+        if c.mode != "remove":
+            tips.append(("It can be undone", "Open this installer again any time (it's in your apps menu as "
+                         "Nothing Liquid) to remove it."))
+        tips.append(("Everything is written down", f"Every step's output goes to {self.short(LOGS)}."))
+        for title, sub in tips:
+            row = Adw.ActionRow(title=title, subtitle=sub)
+            row.set_subtitle_lines(0)
+            row.add_prefix(status_dot("info"))
+            notes.add(row)
+        box.append(notes)
+        go = big_button({"remove": "Remove", "update": "Update"}.get(c.mode, "Install"),
+                        "destructive-action" if c.mode == "remove" else "suggested-action")
+        go.connect("clicked", lambda *_: self.start())
+        box.append(go)
+        p = page("Confirm", box, "confirm")
+        p.connect("shown", lambda *_: go.grab_focus())
+        self.nav.push(p)
+
+    # ── progress ──
+    def start(self):
+        box = column(14)
+        self.kicker = label("", "nl-kicker")
+        self.step_title = label("", "nl-heading")
+        self.step_detail = label("", "dim-label")
+        self.dots = DotProgress()
+        self.elapsed = label("", "caption", "dim-label", wrap=False)
+        self.duration = label("", "caption", "dim-label")
+        meta = Gtk.Box(spacing=12)
+        meta.append(self.elapsed)
+        meta.append(self.duration)
+        for w in (self.kicker, self.step_title, self.step_detail, self.dots, meta):
+            box.append(w)
+        self.logview = Gtk.TextView(editable=False, cursor_visible=False, monospace=True,
+                                    wrap_mode=Gtk.WrapMode.WORD_CHAR)
+        self.logview.add_css_class("nl-log")
+        self.buffer = self.logview.get_buffer()
+        self.live_mark = self.buffer.create_mark("live", self.buffer.get_end_iter(), True)
+        self.log_scroll = Gtk.ScrolledWindow(min_content_height=260, vexpand=True)
+        self.log_scroll.set_child(self.logview)
+        self.log_scroll.add_css_class("nl-logbox")
+        expander = Gtk.Expander(label="Show details")
+        expander.set_child(self.log_scroll)
+        box.append(expander)
+        self.stop_button = Gtk.Button(label="Stop", halign=Gtk.Align.END)
+        self.stop_button.add_css_class("flat")
+        self.stop_button.connect("clicked", lambda *_: self.ask_stop())
+        box.append(self.stop_button)
+        title = {"remove": "Removing", "update": "Updating"}.get(self.choices.mode, "Installing")
+        self.progress_page = page(title, box, "progress", can_pop=False)
+        self.nav.push(self.progress_page)
+
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        self.log_path = LOGS / f"{self.choices.mode}-{stamp}{'-demo' if DEMO else ''}.log"
+        self.started = time.time()
+        self.running = True
+        self.index = 0
+        self.pending_live = None
+        self.runner = Runner(self.log_path, self.on_line, self.on_live, self.on_ready, self.on_done,
+                             self.on_prompt, self.on_exit)
+        self.runner.log.write(f"Nothing Liquid installer, {time.ctime()}: {self.choices}\n")
+        self.runner.start()
+        GLib.timeout_add(500, self.tick)
+
+    def on_ready(self):
+        self.next_step()
+
+    def next_step(self):
+        if self.index >= len(self.steps):
+            self.finish(True)
+            return
+        st = self.steps[self.index]
+        st.started = time.time()
+        visible = [x for x in self.steps if x.key != "finish"]
+        n = visible.index(st) + 1 if st in visible else len(visible)
+        self.kicker.set_label(f"STEP {n} OF {len(visible)}")
+        self.step_title.set_label(st.title)
+        self.step_detail.set_label(st.detail)
+        self.duration.set_label(f"· {st.duration}" if st.duration else "")
+        self.on_line(f"── {st.title} ──")
+        self.runner.recent = []
+        self.runner.log.write(f"$ {st.command}\n")
+        self.runner.run(st.command)
+
+    def tick(self):
+        if not self.running:
+            return False
+        total = sum(st.seconds for st in self.steps) or 1
+        done = sum(st.seconds for st in self.steps[:self.index])
+        if self.index < len(self.steps):
+            st = self.steps[self.index]
+            done += st.seconds * min(0.92, (time.time() - st.started) / max(st.seconds, 1)) if st.started else 0
+        self.dots.set_fraction(done / total)
+        mins, secs = divmod(int(time.time() - self.started), 60)
+        self.elapsed.set_label(f"{mins}:{secs:02d}")
+        return True
+
+    def on_done(self, code):
+        self.drop_dialog()
+        if not self.running:
+            return
+        st = self.steps[self.index]
+        if code == 0:
+            st.done = True
+            self.index += 1
+            self.next_step()
+            return
+        self.runner.log.write(f"(step {st.key} ended with {code})\n")
+        if st.key == "glass" and any("you have edited" in line for line in self.runner.recent):
+            self.ask_overwrite(st)
+        else:
+            self.show_failed(st, code)
+
+    def on_exit(self):
+        if self.running:
+            self.running = False
+            if not self.closing:
+                st = self.steps[min(self.index, len(self.steps) - 1)]
+                self.show_failed(st, -1)
+
+    # ── the log ──
+    def on_line(self, line):
+        end = self.buffer.get_end_iter()
+        self.buffer.delete(self.buffer.get_iter_at_mark(self.live_mark), end)
+        self.buffer.insert(self.buffer.get_end_iter(), line + "\n")
+        self.buffer.move_mark(self.live_mark, self.buffer.get_end_iter())
+        lines = self.buffer.get_line_count()
+        if lines > 6000:
+            self.buffer.delete(self.buffer.get_start_iter(), self.buffer.get_iter_at_line(lines - 5000)[1])
+        self.scroll_log()
+
+    def on_live(self, text):
+        # Throttled: progress bars redraw many times a second
+        first = self.pending_live is None
+        self.pending_live = text
+        if first:
+            GLib.timeout_add(100, self.flush_live)
+
+    def flush_live(self):
+        text, self.pending_live = self.pending_live, None
+        if text is None:
+            return False
+        self.buffer.delete(self.buffer.get_iter_at_mark(self.live_mark), self.buffer.get_end_iter())
+        self.buffer.insert(self.buffer.get_end_iter(), text.replace(SUDO_MARK, "[password]"))
+        self.scroll_log()
+        return False
+
+    def scroll_log(self):
+        adj = self.log_scroll.get_vadjustment()
+        if adj.get_upper() - adj.get_page_size() - adj.get_value() < 80:
+            GLib.idle_add(lambda: self.logview.scroll_to_mark(self.live_mark, 0, False, 0, 1) and False)
+
+    # ── questions from the terminal ──
+    def on_prompt(self, kind, text, recent, token):
+        self.token = token
+        question = re.sub(r"^\s*(::|==>|->)\s*", "", text).strip()
+        if kind == "password":
+            self.ask_password(any("Sorry, try again" in line for line in recent[-3:]))
+        elif kind == "yesno":
+            if re.search(r"Proceed with (installation|download)\?", text):
+                self.runner.answer("y", token)  # what you agreed to on the last page
+                return
+            default_yes = "[Y/" in text
+            body = re.sub(r"\s*\[[YyNn]/[YyNn]\]:?$", "", question)
+            self.ask("The package manager is asking", body + "\n\nIf you're not sure, the highlighted answer is "
+                     "its own suggestion.", [("n", "No"), ("y", "Yes")], "y" if default_yes else "n")
+        elif kind == "failure":
+            tail = "\n".join(line for line in recent[-12:] if line.strip())
+            self.ask("A command didn't work", "Often it's a download that broke off: trying again usually works. "
+                     "Skipping it can leave part of the desktop not working.",
+                     [("e", "Stop"), ("i", "Skip it"), ("r", "Try again")], "r", detail=tail,
+                     appearance={"i": Adw.ResponseAppearance.DESTRUCTIVE})
+        else:
+            self.ask_text(question)
+
+    def reply(self, text, secret=False):
+        self.dialog = None
+        if self.runner:
+            self.runner.answer(text, self.token, secret)
+
+    def show_dialog(self, dialog):
+        self.drop_dialog()
+        self.dialog = dialog
+        dialog.present(self)
+
+    def drop_dialog(self):
+        # The question it answered is gone (the step ended): don't leave it up
+        if self.dialog:
+            dialog, self.dialog = self.dialog, None
+            dialog.force_close()
+
+    def ask(self, heading, body, responses, default, detail=None, appearance=None):
+        dialog = Adw.AlertDialog(heading=heading, body=body)
+        for rid, text in responses:
+            dialog.add_response(rid, text)
+        dialog.set_response_appearance(default, Adw.ResponseAppearance.SUGGESTED)
+        for rid, look in (appearance or {}).items():
+            dialog.set_response_appearance(rid, look)
+        dialog.set_default_response(default)
+        dialog.set_close_response(default)
+        if detail:
+            dialog.set_extra_child(self.detail_box(detail))
+        dialog.connect("response", lambda d, rid: self.dialog is d and self.reply(rid))
+        self.show_dialog(dialog)
+
+    def detail_box(self, text):
+        view = label(text, "nl-log", selectable=True)
+        sc = Gtk.ScrolledWindow(min_content_height=120, max_content_height=220, propagate_natural_height=True)
+        sc.set_child(view)
+        sc.add_css_class("nl-logbox")
+        return sc
+
+    def ask_password(self, retry):
+        body = ("That password didn't work. Try again: it's the one you use to log in to this computer."
+                if retry else "To install system parts, the installer needs the password you use to log in "
+                "to this computer. It goes to the system (sudo) and nowhere else.")
+        if DEMO:
+            body += "\n\n(Demo: type anything.)"
+        dialog = Adw.AlertDialog(heading="Your password", body=body)
+        entry = Gtk.PasswordEntry(show_peek_icon=True, activates_default=True)
+        dialog.set_extra_child(entry)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("ok", "Continue")
+        dialog.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("ok")
+        dialog.set_close_response("cancel")
+
+        def response(d, rid):
+            if self.dialog is not d:
+                return
+            if rid == "ok":
+                self.reply(entry.get_text(), secret=True)
+            else:
+                self.dialog = None
+                if self.runner:
+                    self.runner.interrupt()
+            entry.set_text("")
+        dialog.connect("response", response)
+        self.show_dialog(dialog)
+        entry.grab_focus()
+
+    def ask_text(self, question):
+        dialog = Adw.AlertDialog(heading="A question from the installer",
+                                 body=question + "\n\nLeave it empty to take its default answer.")
+        entry = Gtk.Entry(activates_default=True)
+        dialog.set_extra_child(entry)
+        dialog.add_response("ok", "Answer")
+        dialog.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("ok")
+        dialog.set_close_response("ok")
+        dialog.connect("response", lambda d, rid: self.dialog is d and self.reply(entry.get_text()))
+        self.show_dialog(dialog)
+        entry.grab_focus()
+
+    def ask_overwrite(self, st):
+        edited = [re.sub(r"^.*you have edited (\S+) yourself.*$", r"\1", line) for line in self.runner.recent
+                  if "you have edited" in line]
+        dialog = Adw.AlertDialog(
+            heading="You've changed some of these files",
+            body="Nothing Liquid would replace files you have edited yourself. Replace them anyway? "
+                 "Your versions are kept in ~/.local/share/nothing-liquid, so you can copy your changes back.")
+        dialog.set_extra_child(self.detail_box("\n".join(edited)))
+        dialog.add_response("stop", "Stop")
+        dialog.add_response("force", "Replace them")
+        dialog.set_response_appearance("force", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("force")
+        dialog.set_close_response("stop")
+
+        def response(d, rid):
+            if rid == "force":
+                st.command += " --force"
+                self.next_step()
+            else:
+                self.show_failed(st, 1)
+        dialog.connect("response", response)
+        dialog.present(self)
+
+    # ── stopping ──
+    def ask_stop(self, then_close=False):
+        dialog = Adw.AlertDialog(heading="Stop now?",
+                                 body="What's done so far stays done, and it may leave the desktop half set up. "
+                                      "Run the installer again to finish, or to remove it.")
+        dialog.add_response("keep", "Keep going")
+        dialog.add_response("stop", "Stop")
+        dialog.set_response_appearance("stop", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("keep")
+        dialog.set_close_response("keep")
+
+        def response(d, rid):
+            if rid != "stop" or not self.running:
+                return
+            self.running = False
+            self.runner.log.write("(stopped by you)\n")
+            self.runner.interrupt()
+            if then_close:
+                self.closing = True
+                self.runner.close()
+                self.runner = None
+                self.close()
+            else:
+                self.show_failed(self.steps[self.index], -2)
+        dialog.connect("response", response)
+        dialog.present(self)
+
+    def on_close_request(self, *_):
+        if self.running:
+            self.ask_stop(then_close=True)
+            return True
+        if self.runner:
+            self.runner.close()
+            self.runner = None
+        return False
+
+    # ── the end ──
+    def finish(self, ok):
+        self.running = False
+        self.dots.set_fraction(1)
+        if not DEMO and not DRY:
+            self.install_launcher()
+        if self.runner:
+            self.runner.close()
+            self.runner = None
+        self.show_done()
+
+    def install_launcher(self):
+        # So it can be found again in the apps menu, to update or remove
+        apps = Path(os.environ.get("XDG_DATA_HOME") or HOME / ".local/share") / "applications"
+        apps.mkdir(parents=True, exist_ok=True)
+        exe = Path(__file__).resolve()
+        if self.choices.mode == "remove":
+            return
+        (apps / f"{APP_ID}.desktop").write_text(
+            "[Desktop Entry]\nType=Application\nName=Nothing Liquid\n"
+            "Comment=Install, update or remove the Nothing Liquid desktop\n"
+            f"Exec=python3 \"{exe}\"\nIcon={HERE / 'icon.svg'}\nTerminal=false\nCategories=System;Settings;\n")
+
+    def show_done(self):
+        c, s = self.choices, self.system
+        box = column(16)
+        dot = Gtk.Box(halign=Gtk.Align.CENTER)
+        dot.add_css_class("nl-dot")
+        box.append(dot)
+        if c.mode == "remove":
+            box.append(label("REMOVED", "nl-title", xalign=0.5))
+            box.append(label("Your files are back as they were. Hyprland and end-4's desktop are still installed: "
+                             "at the login screen you can pick your previous desktop.", "nl-lead", xalign=0.5))
+        else:
+            box.append(label("ALL SET", "nl-title", xalign=0.5))
+            if s["in_hyprland"]:
+                box.append(label("It's on. Look around: try the dock, or open a terminal.", "nl-lead", xalign=0.5))
+            else:
+                box.append(label("Nothing Liquid is installed.", "nl-lead", xalign=0.5))
+                steps = Adw.PreferencesGroup(title="To start it")
+                for i, (t, sub) in enumerate([
+                        ("Save your work and log out", "Or restart the computer."),
+                        ("Choose Hyprland on the login screen", "Look for the session menu: usually a button near "
+                         "your name or in a corner of the screen."),
+                        ("Log in", "The first start takes a few seconds while it sets up its colours.")], 1):
+                    row = Adw.ActionRow(title=t, subtitle=sub)
+                    row.set_subtitle_lines(0)
+                    row.add_prefix(label(f"{i:02d}", "nl-num", wrap=False))
+                    steps.add(row)
+                box.append(steps)
+            keys = Adw.PreferencesGroup(title="A few keys to start with",
+                                        description="SUPER is the key with the Windows or Command logo.")
+            for k, what in KEYS:
+                row = Adw.ActionRow(title=what)
+                chip = label(k, "nl-key", wrap=False)
+                chip.set_valign(Gtk.Align.CENTER)
+                row.add_suffix(chip)
+                keys.add(row)
+            box.append(keys)
+        buttons = Gtk.Box(spacing=12, halign=Gtk.Align.CENTER)
+        if c.mode != "remove" and not s["in_hyprland"] and not (DEMO or DRY):
+            out_b = big_button("Log out now")
+            out_b.connect("clicked", lambda *_: self.ask_logout())
+            buttons.append(out_b)
+            close = big_button("Later", "flat")
+        else:
+            close = big_button("Close")
+        close.connect("clicked", lambda *_: self.close())
+        buttons.append(close)
+        box.append(buttons)
+        log = Gtk.Button(label="Open the log", halign=Gtk.Align.CENTER)
+        log.add_css_class("flat")
+        log.connect("clicked", lambda *_: self.open_log())
+        box.append(log)
+        p = page("Done", box, "done", can_pop=False, header_title=False)
+        p.connect("shown", lambda *_: buttons.get_first_child().grab_focus())
+        self.nav.push(p)
+
+    def show_failed(self, st, code):
+        self.running = False
+        self.drop_dialog()
+        box = column(16)
+        by_you = code in (-2, 130)
+        box.append(label("STOPPED" if by_you else "THAT DIDN'T WORK", "nl-title", xalign=0.5))
+        box.append(label(f"“{st.title}” stopped" + (" because you asked it to." if by_you else ".") +
+                         " Nothing after it has run, and your settings are backed up.", "nl-lead", xalign=0.5))
+        tail = [line for line in (self.runner.recent if self.runner else []) if line.strip()][-14:]
+        if tail and not by_you:
+            box.append(self.detail_box("\n".join(tail)))
+        if st.key in ("deps", "tools", "font", "pull") and not by_you:
+            box.append(label("Usually that's the internet connection or a busy download server: "
+                             "check you're online and try again.", "dim-label", xalign=0.5))
+        buttons = Gtk.Box(spacing=12, halign=Gtk.Align.CENTER)
+        retry = big_button("Try again")
+        retry.connect("clicked", lambda *_: self.retry(st))
+        buttons.append(retry)
+        if st.skippable and not by_you:
+            skip = big_button("Skip this step", "flat")
+            skip.set_tooltip_text(st.skip_note)
+            skip.connect("clicked", lambda *_: self.retry(st, skip=True))
+            buttons.append(skip)
+        close = big_button("Close", "flat")
+        close.connect("clicked", lambda *_: self.close())
+        buttons.append(close)
+        box.append(buttons)
+        if st.skippable and st.skip_note:
+            box.append(label(st.skip_note, "caption", "dim-label", xalign=0.5))
+        log = Gtk.Button(label="Open the full log", halign=Gtk.Align.CENTER)
+        log.add_css_class("flat")
+        log.connect("clicked", lambda *_: self.open_log())
+        box.append(log)
+        p = page("Stopped", box, "failed", can_pop=False)
+        p.connect("shown", lambda *_: retry.grab_focus())
+        self.nav.push(p)
+
+    def retry(self, st, skip=False):
+        self.nav.pop_to_tag("progress")
+        if skip:
+            self.on_line(f"(skipped: {st.title})")
+            self.index += 1
+        if not self.runner:  # the session ended (stopped or closed): a new one
+            self.runner = Runner(self.log_path, self.on_line, self.on_live, self.on_ready, self.on_done,
+                                 self.on_prompt, self.on_exit)
+            self.running = True
+            self.runner.start()
+            GLib.timeout_add(500, self.tick)
+            return
+        self.running = True
+        GLib.timeout_add(500, self.tick)
+        self.next_step()
+
+    def ask_logout(self):
+        dialog = Adw.AlertDialog(heading="Log out now?",
+                                 body="Apps that are open will close: save your work first.")
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("out", "Log out")
+        dialog.set_response_appearance("out", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("out")
+        dialog.set_close_response("cancel")
+
+        def response(d, rid):
+            if rid == "out":
+                session = os.environ.get("XDG_SESSION_ID")
+                cmd = ["loginctl", "terminate-session", session] if session else ["loginctl", "terminate-user", os.environ.get("USER", "")]
+                subprocess.Popen(cmd)
+        dialog.connect("response", response)
+        dialog.present(self)
+
+    def open_log(self):
+        if self.log_path and self.log_path.exists():
+            Gtk.FileLauncher.new(Gio.File.new_for_path(str(self.log_path))).launch(self, None, None)
+
+    @staticmethod
+    def short(path):
+        p = str(path)
+        return "~" + p[len(str(HOME)):] if p.startswith(str(HOME)) else p
+
+
+class App(Adw.Application):
+    def __init__(self):
+        super().__init__(application_id=APP_ID,
+                         flags=Gio.ApplicationFlags.NON_UNIQUE)
+        self.connect("activate", self.on_activate)
+
+    def on_activate(self, app):
+        Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.PREFER_DARK)
+        css = Gtk.CssProvider()
+        css.load_from_string(CSS)
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css,
+                                                  Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        Gtk.Window.set_default_icon_name("system-software-install")
+        Window(self).present()
+
+
+if __name__ == "__main__":
+    sys.exit(App().run([a for a in sys.argv if not a.startswith("--")]))

@@ -29,6 +29,7 @@ Clips: [touch light](docs/media/touch-light.mp4) ·
 | `dots/` | submodule: fork of [end-4/dots-hyprland](https://github.com/end-4/dots-hyprland), branch `nothing-liquid` |
 | `hyprglass/` | submodule: fork of [hyprnux/hyprglass](https://github.com/hyprnux/hyprglass), branch `nothing-liquid` |
 | `install.sh` / `uninstall.sh` | apply to / remove from your live `~/.config`, with backups |
+| `installer/` | the installer window for newcomers (`get.sh` fetches and opens it) |
 | `sddm/` | the login screen (SDDM theme) and its installer |
 | `docs/media/` | screenshots and clips |
 
@@ -262,6 +263,35 @@ sddm/install.sh --uninstall  # back to the theme you had
   spring motion curves for windows, layers and workspaces
 
 ## Install
+
+### The easy way (new to Linux or Hyprland?)
+
+On Arch Linux or a distro built on it (EndeavourOS, CachyOS, Garuda, Manjaro),
+open a terminal on your desktop, paste this and press Enter:
+
+```
+bash <(curl -fsSL https://raw.githubusercontent.com/shlok-shinde/nothing-liquid/main/installer/get.sh)
+```
+
+It installs the few packages the installer window needs, downloads Nothing
+Liquid to `~/.local/share/nothing-liquid/repo` and opens the installer. Nothing
+else changes until you press Install there. The window checks your computer
+first (distro, internet, space, Hyprland version, graphics), lets you pick the
+accent, the font, the glass login screen and what the power button does, then
+does everything below for you: end-4's desktop and its packages on a computer
+that doesn't have it yet, the glass, and your choices. It asks for your password
+once, turns any question the scripts ask into a dialog, and writes every step
+to `~/.cache/nothing-liquid/logs`. When it's done, log out and pick Hyprland on
+the login screen. Run it again (it's in your apps menu as Nothing Liquid) to
+update or remove it.
+
+![The installer: welcome, checking the computer, a question from the package manager while installing](docs/media/installer.png)
+
+From a clone, the same window: `installer/nothing-liquid-installer`
+(`--demo` walks through it with stand-in steps, `--dry-run` runs the real
+checks and `./install.sh --dry-run`; neither changes anything).
+
+### By hand
 
 Needs a working [end-4 dots-hyprland](https://github.com/end-4/dots-hyprland)
 install (the `ii` shell, Lua Hyprland config) on **Hyprland 0.56.x**, plus what

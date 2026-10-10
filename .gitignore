@@ -7,3 +7,5 @@ sandbox/
 *.patch
 *.so
 /.hyprglass-built-for
+# Python bytecode (the installer)
+__pycache__/

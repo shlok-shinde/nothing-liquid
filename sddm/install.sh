@@ -19,6 +19,7 @@
 #
 # And the power button (power-key.conf, for systemd-logind): a short press
 # sleeps, holding it shuts down. Instead of shutting down on any press.
+# NL_POWER_KEY=0 leaves the power button as it is.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -84,6 +85,8 @@ if [[ -z "$wall" ]]; then
   wall="$(setting background.wallpaperPath)"
   case "$wall" in *.mp4|*.webm|*.mkv|*.avi|*.mov) wall="$(setting background.thumbnailPath)" ;; esac
 fi
+# None set yet (a fresh install, before the shell's first run): end-4's default
+[[ -f "$wall" ]] || wall="${XDG_CONFIG_HOME:-$HOME/.config}/quickshell/ii/assets/images/default_wallpaper.png"
 [[ -f "$wall" ]] || die "no wallpaper image to use (pass one: sddm/install.sh /path/to/image)"
 if command -v magick >/dev/null; then
   magick "$wall" -resize '2560x2560>' -quality 92 "$STAGE/background.jpg"
@@ -138,9 +141,11 @@ sudo systemctl daemon-reload
 sudo systemctl enable nothing-liquid-login-keys.service >/dev/null 2>&1
 sudo systemctl restart nothing-liquid-login-keys.service
 
-say "power button: a short press sleeps, holding it shuts down ($POWER_KEY_CONF)"
-sudo install -D -m 644 "$HERE/power-key.conf" "$POWER_KEY_CONF"
-sudo systemctl reload systemd-logind
+if [[ "${NL_POWER_KEY:-1}" != 0 ]]; then
+  say "power button: a short press sleeps, holding it shuts down ($POWER_KEY_CONF)"
+  sudo install -D -m 644 "$HERE/power-key.conf" "$POWER_KEY_CONF"
+  sudo systemctl reload systemd-logind
+fi
 
 say "making it the login screen (undo goes back to: ${previous:-the default})"
 if grep -q '^Current=' "$CONF" 2>/dev/null; then
