@@ -64,6 +64,10 @@ def apply_prefs(spec):
     if "accent" in prefs:
         glass["accentColor"] = prefs["accent"]
         print(f"accent: {prefs['accent'] or 'your wallpaper colours'}")
+        # Nothing's look: black and white around the one accent. With "your wallpaper's
+        # colours", the wallpaper picks them
+        appearance.setdefault("palette", {})["type"] = "scheme-monochrome" if prefs["accent"] else "auto"
+        print(f"colours: {appearance['palette']['type']}")
     font = prefs.get("font", "clean")
     if font != "clean":
         families = subprocess.run(["fc-list", ":", "family"], capture_output=True, text=True).stdout
@@ -71,7 +75,7 @@ def apply_prefs(spec):
         doto = next((n for n in ("Doto Black", "Doto") if n in names), None)
         if doto:
             keys = ("title", "numbers", "expressive") if font == "titles" else \
-                   ("main", "title", "numbers", "expressive", "monospace")
+                   ("main", "title", "numbers", "expressive", "monospace", "iconNerd")
             fonts = appearance.setdefault("fonts", {})
             for k in keys:
                 fonts[k] = doto
@@ -260,7 +264,7 @@ class Step:
 class Choices:
     mode: str = "full"  # full | overlay | update | remove
     accent: int = 0
-    font: int = 0
+    font: int = 2  # dot-matrix everywhere: Nothing Liquid's own look
     login: bool = False
     power: bool = True
 
@@ -481,7 +485,7 @@ class Window(RunnerUI, Adw.ApplicationWindow):
             prefs = {}
         accents, fonts = [a[1] for a in ACCENTS], [f[1] for f in FONTS]
         self.choices = Choices(mode="full", accent=accents.index(prefs["accent"]) if prefs.get("accent") in accents else 0,
-                               font=fonts.index(prefs["font"]) if prefs.get("font") in fonts else 0,
+                               font=fonts.index(prefs["font"]) if prefs.get("font") in fonts else 2,
                                login=prefs.get("login", True), power=prefs.get("power", True))
         self.steps = plan(self.choices, self.system)
         if not (DEMO or DRY):

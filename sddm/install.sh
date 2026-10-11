@@ -89,8 +89,11 @@ if [[ -z "$wall" ]]; then
   wall="$(setting background.wallpaperPath)"
   case "$wall" in *.mp4|*.webm|*.mkv|*.avi|*.mov) wall="$(setting background.thumbnailPath)" ;; esac
 fi
-# None set yet (a fresh install, before the shell's first run): end-4's default
-[[ -f "$wall" ]] || wall="${XDG_CONFIG_HOME:-$HOME/.config}/quickshell/ii/assets/images/default_wallpaper.png"
+# None set yet (a fresh install, before the shell's first run): the one the first
+# run will set, Nothing Liquid's own, or end-4's default
+images="${XDG_CONFIG_HOME:-$HOME/.config}/quickshell/ii/assets/images"
+[[ -f "$wall" ]] || wall="$images/nothing-liquid-wallpaper.jpg"
+[[ -f "$wall" ]] || wall="$images/default_wallpaper.png"
 [[ -f "$wall" ]] || die "no wallpaper image to use (pass one: sddm/install.sh /path/to/image)"
 if command -v magick >/dev/null; then
   magick "$wall" -resize '2560x2560>' -quality 92 "$STAGE/background.jpg"

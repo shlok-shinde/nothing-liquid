@@ -176,7 +176,7 @@ class Window(RunnerUI, Adw.ApplicationWindow):
         super().__init__(application=app, title="Nothing Liquid")
         self.demo = DEMO
         self.xkb = os.environ.get("XKB_DEFAULT_LAYOUT") or "us"
-        self.choice = {"disk": None, "mode": None, "accent": 0, "font": 0, "login": True, "power": True,
+        self.choice = {"disk": None, "mode": None, "accent": 0, "font": 2, "login": True, "power": True,
                        "encrypt": False}
         self.runner = None
         self.running = False
@@ -638,7 +638,9 @@ class Window(RunnerUI, Adw.ApplicationWindow):
         g = Adw.PreferencesGroup()
         if c["mode"] == "free":
             room = max(d["free"], d["free_again"])
-            disk_line = (f"Nothing Liquid goes in the {size(room)} of free space on {d['model']}. "
+            where = (f"replaces the earlier Nothing Liquid on {d['model']}, with the free space: {size(room)}. "
+                     if d["ours"] else f"goes in the {size(room)} of free space on {d['model']}. ")
+            disk_line = ("Nothing Liquid " + where
                          + ("Windows and your files aren't touched." if d["windows"] else "What's there stays."))
         elif d["empty"]:
             disk_line = f"Nothing Liquid gets all of {d['model']} ({size(d['size'])}), which is empty."
