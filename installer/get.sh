@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Nothing Liquid: get the installer and open it. Paste into a terminal:
 #
-#   bash <(curl -fsSL https://raw.githubusercontent.com/shlok-shinde/nothing-liquid/main/installer/get.sh)
+#   bash <(curl -fsSL https://raw.githubusercontent.com/shlok-shinde/nothing-liquid/nvidia/installer/get.sh)
 #
 # It installs what the installer window needs (git, GTK 4 and libadwaita for
 # Python), downloads Nothing Liquid to ~/.local/share/nothing-liquid/repo (or
@@ -10,6 +10,7 @@
 set -euo pipefail
 
 REPO="${NL_REPO:-https://github.com/shlok-shinde/nothing-liquid.git}"
+BRANCH="${NL_BRANCH:-nvidia}"  # (this branch: NVIDIA RTX laptops)
 DEST="${NL_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/nothing-liquid/repo}"
 
 say()  { printf '\033[1;31m●\033[0m %s\n' "$*"; }
@@ -37,7 +38,7 @@ if [[ -d "$DEST/.git" ]]; then
 else
   say "Downloading Nothing Liquid to $DEST"
   mkdir -p "$(dirname "$DEST")"
-  git clone --recurse-submodules --quiet "$REPO" "$DEST"
+  git clone -b "$BRANCH" --recurse-submodules --quiet "$REPO" "$DEST"
 fi
 
 apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"

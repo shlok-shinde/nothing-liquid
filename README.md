@@ -305,6 +305,50 @@ From a clone, the same window: `installer/nothing-liquid-installer`
 (`--demo` walks through it with stand-in steps, `--dry-run` runs the real
 checks and `./install.sh --dry-run`; neither changes anything).
 
+### NVIDIA RTX laptops
+
+This branch (`nvidia`) is for laptops with an NVIDIA RTX or GTX 16 card next to
+an Intel or AMD GPU, which is most gaming laptops. There the NVIDIA GPU follows the
+power profile you pick in the shell:
+
+| Profile | The NVIDIA GPU |
+|---|---|
+| Power saver | Off completely (0 W): once nothing uses it, it's taken off the PCI bus and its slot loses power. Nothing can wake it, not even `prime-run` |
+| Balanced | On demand: off while idle, on as soon as an app uses it (`prime-run <app>`, or a game) |
+| Performance | On, with NVIDIA's Dynamic Boost, which gives the GPU power the CPU isn't using |
+
+For that, Hyprland runs on the integrated GPU. A Hyprland that opens the NVIDIA
+GPU keeps it awake all day, a few watts gone for nothing. The NVIDIA GPU joins
+only when a screen is plugged into one of its ports at login. On many laptops
+HDMI is wired to it, so plug that screen in first, then log in. A laptop switched
+to the NVIDIA GPU alone in its firmware runs Hyprland on it, as it has to.
+
+```
+git clone -b nvidia --recurse-submodules https://github.com/shlok-shinde/nothing-liquid
+cd nothing-liquid
+./install.sh               # the glass, and hyprland/gpu.lua
+nvidia/install.sh          # asks for sudo; see below
+nvidia/install.sh --status # what the GPU is doing now, and what's using it
+```
+
+`nvidia/install.sh` installs NVIDIA's driver if there's none yet: the open kernel
+modules, built for each of your kernels, plus `nvidia-utils` and `nvidia-prime`.
+It turns on runtime power management (`NVreg_DynamicPowerManagement=0x02`) and
+gives the two GPUs fixed names, `/dev/dri/nl-igpu` and `nl-dgpu`. Hyprland's
+`AQ_DRM_DEVICES` is a list split on `:`, and the `by-path` names contain colons,
+so they can't be used there. It also sets up `nothing-liquid-gpu-power.service`,
+which follows `power-profiles-daemon` (installed if you have no profile daemon).
+In power saver, a game still running on the GPU keeps it on until you close it;
+the service tries again every few seconds. `--uninstall` takes all of this out
+and brings the GPU back. The driver stays.
+
+The installer window does this too, as one more step, when it finds such a
+laptop. To get it with this branch:
+
+```
+bash <(curl -fsSL https://raw.githubusercontent.com/shlok-shinde/nothing-liquid/nvidia/installer/get.sh)
+```
+
 ### By hand
 
 Needs a working [end-4 dots-hyprland](https://github.com/end-4/dots-hyprland)

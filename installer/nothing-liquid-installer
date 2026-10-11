@@ -47,6 +47,7 @@ CONFIG = HOME / ".config/illogical-impulse/config.json"
 LOGS = Path(os.environ.get("XDG_CACHE_HOME") or HOME / ".cache") / "nothing-liquid/logs"
 POWER_KEY_CONF = "/etc/systemd/logind.conf.d/10-nothing-liquid-power-key.conf"
 LOGIN_THEME = Path("/usr/share/sddm/themes/nothing-liquid")
+GPU_POWER_UNIT = "/etc/systemd/system/nothing-liquid-gpu-power.service"
 DOTO_URL = "https://raw.githubusercontent.com/google/fonts/main/ofl/doto/Doto%5BROND%2Cwght%5D.ttf"
 HYPRLAND_TARGET = (0, 56)
 APP_ID = "io.github.shlok_shinde.NothingLiquid"  # also the desktop file's name, so docks find its icon
@@ -172,6 +173,9 @@ def detect():
         if name not in s["gpus"]:
             s["gpus"].append(name)
     s["nvidia_driver"] = os.path.isdir("/sys/module/nvidia") or bool(out(["pacman", "-Q", "nvidia-utils"]))
+    # A laptop's NVIDIA GPU next to the integrated one: nvidia/install.sh sets it up
+    s["nvidia_hybrid"] = "NVIDIA" in s["gpus"] and len(s["gpus"]) > 1
+    s["gpu_power"] = os.path.exists(GPU_POWER_UNIT)
     s["end4"] = (HOME / ".config/quickshell/ii/shell.qml").exists()
     s["nl"] = (HOME / ".local/lib/nothing-liquid/hyprglass.so").exists() or (STATE / "original").exists()
     dm = os.path.basename(os.path.realpath("/etc/systemd/system/display-manager.service"))
@@ -227,7 +231,10 @@ def checks(s):
                        f"{vstr(v)} {word}. Nothing Liquid is made for 0.56: the desktop works, but the glass "
                        "effects may not load until they're updated for this version."))
     gpus = s["gpus"]
-    if "NVIDIA" in gpus and not s["nvidia_driver"]:
+    if s["nvidia_hybrid"]:
+        c.append(Check("Graphics", "ok", " + ".join(gpus) + (
+            "" if s["nvidia_driver"] else ": NVIDIA's driver goes in with the rest")))
+    elif "NVIDIA" in gpus and not s["nvidia_driver"]:
         c.append(Check("Graphics", "warn",
                        "An NVIDIA card without NVIDIA's driver. Hyprland needs it: install your distro's NVIDIA "
                        "driver first (for example nvidia-open), restart, and run the installer again."))
@@ -267,6 +274,7 @@ class Choices:
     font: int = 2  # dot-matrix everywhere: Nothing Liquid's own look
     login: bool = False
     power: bool = True
+    gpu: bool = True  # (NVIDIA laptops) the GPU follows the power profile
 
 
 def demo_command(key):
@@ -293,8 +301,9 @@ def plan(c: Choices, s):
     me = q(str(Path(__file__).resolve()))
     steps = []
     login = c.login and s["dm"] == "sddm"
-    removing_system = c.mode == "remove" and (s["login_theme"] or s["power_key"])
-    needs_sudo = c.mode == "full" or login or (c.power and not s["power_key"]) or removing_system \
+    gpu = c.gpu and s["nvidia_hybrid"] and (c.mode in ("full", "overlay") or (c.mode == "update" and s["gpu_power"]))
+    removing_system = c.mode == "remove" and (s["login_theme"] or s["power_key"] or s["gpu_power"])
+    needs_sudo = c.mode == "full" or login or gpu or (c.power and not s["power_key"]) or removing_system \
         or (c.mode == "overlay" and not s["build_tools"]) or (c.mode == "update" and s["login_theme"])
     if needs_sudo and not DRY:
         steps.append(Step("sudo", "Getting permission",
@@ -318,6 +327,13 @@ def plan(c: Choices, s):
                  "~/ii-original-dots-backup first.",
                  f"cd {D} && bash ./setup install-files {flags}", 40),
         ]
+    if gpu:
+        steps.append(Step("gpu", "Setting up the NVIDIA graphics",
+                          ("" if s["nvidia_driver"] else "NVIDIA's driver, and ") +
+                          "the GPU following the power profile: off in power saver, on only for apps that use it "
+                          "in balanced. The desktop runs on the integrated GPU.",
+                          f"bash {R}/nvidia/install.sh", 20 if s["nvidia_driver"] else 300, skippable=True,
+                          skip_note="The NVIDIA GPU stays as it was; run nvidia/install.sh later to set it up."))
     if c.mode == "overlay" and not s["build_tools"]:
         steps.append(Step("tools", "Installing build tools", "What it takes to build the glass for your Hyprland.",
                           "sudo pacman -S --needed --noconfirm base-devel", 60))
@@ -358,6 +374,10 @@ def plan(c: Choices, s):
         elif s["power_key"]:
             steps.append(Step("power-off", "Putting the power button back", "Any press shuts down again.",
                               f"sudo rm -f {POWER_KEY_CONF} && sudo systemctl reload systemd-logind", 5, skippable=True))
+        if s["gpu_power"]:
+            steps.append(Step("gpu-off", "Putting the NVIDIA GPU back as it was",
+                              "It stays on demand, and Hyprland uses it again from the next login. "
+                              "NVIDIA's driver stays.", f"bash {R}/nvidia/install.sh --uninstall", 10, skippable=True))
     steps.append(Step("finish", "Finishing up", "Tidying up.", "nl_finish", 2))
     if DEMO:
         for st in steps:
@@ -366,7 +386,7 @@ def plan(c: Choices, s):
     elif DRY:
         for st in steps:
             if st.key in ("deps", "setups", "files", "tools", "font", "prefs", "login", "power",
-                          "pull", "uninstall", "login-off", "power-off"):
+                          "pull", "uninstall", "login-off", "power-off", "gpu", "gpu-off"):
                 st.command = f"echo {q('would run: ' + st.command)}; sleep 1"
     return steps
 
@@ -486,7 +506,8 @@ class Window(RunnerUI, Adw.ApplicationWindow):
         accents, fonts = [a[1] for a in ACCENTS], [f[1] for f in FONTS]
         self.choices = Choices(mode="full", accent=accents.index(prefs["accent"]) if prefs.get("accent") in accents else 0,
                                font=fonts.index(prefs["font"]) if prefs.get("font") in fonts else 2,
-                               login=prefs.get("login", True), power=prefs.get("power", True))
+                               login=prefs.get("login", True), power=prefs.get("power", True),
+                               gpu=prefs.get("gpu", True))
         self.steps = plan(self.choices, self.system)
         if not (DEMO or DRY):
             self.steps.insert(-1, Step("first-boot", "Taking the setup screen away",
@@ -658,6 +679,15 @@ class Window(RunnerUI, Adw.ApplicationWindow):
         power.connect("notify::active", lambda r, _: setattr(self.choices, "power", r.get_active()))
         prefs.add(login)
         prefs.add(power)
+        if s["nvidia_hybrid"]:
+            gpu = Adw.SwitchRow(title="NVIDIA GPU follows the power profile",
+                                subtitle="Power saver turns it off completely; balanced turns it on only for apps "
+                                         "that use it. Saves battery.", active=True)
+            if s["gpu_power"]:
+                gpu.set_subtitle("Already set up.")
+                gpu.set_sensitive(False)
+            gpu.connect("notify::active", lambda r, _: setattr(self.choices, "gpu", r.get_active()))
+            prefs.add(gpu)
         box.append(prefs)
         self.prefs_group = prefs
 

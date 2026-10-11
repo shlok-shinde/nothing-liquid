@@ -1,0 +1,12 @@
+[Unit]
+Description=Nothing Liquid: the NVIDIA GPU follows the power profile
+Documentation=https://github.com/shlok-shinde/nothing-liquid/tree/nvidia/nvidia
+After=power-profiles-daemon.service tuned-ppd.service
+
+[Service]
+ExecStart=/usr/local/lib/nothing-liquid/gpu-power
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

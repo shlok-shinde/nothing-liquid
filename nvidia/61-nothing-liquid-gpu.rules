@@ -1,0 +1,7 @@
+# Nothing Liquid: names for the two GPUs of a hybrid laptop that don't change from
+# one start to the next (card1 and card2 can swap) and have no ":" in them, unlike
+# /dev/dri/by-path (Hyprland's AQ_DRM_DEVICES is a ":"-separated list).
+#   /dev/dri/nl-igpu  the integrated one (Intel or AMD), which drives the laptop's screen
+#   /dev/dri/nl-dgpu  the NVIDIA one
+SUBSYSTEM=="drm", KERNEL=="card[0-9]*", ENV{DEVTYPE}=="drm_minor", DRIVERS=="i915|xe|amdgpu", SYMLINK+="dri/nl-igpu"
+SUBSYSTEM=="drm", KERNEL=="card[0-9]*", ENV{DEVTYPE}=="drm_minor", DRIVERS=="nvidia", SYMLINK+="dri/nl-dgpu"
