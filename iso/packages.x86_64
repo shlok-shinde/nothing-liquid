@@ -2,6 +2,7 @@
 # and what the installer window needs
 cage
 python-gobject
+python-cairo
 gtk4
 libadwaita
 adwaita-fonts

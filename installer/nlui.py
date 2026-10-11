@@ -302,10 +302,11 @@ def label(text, *classes, wrap=True, xalign=0.0, selectable=False):
     return w
 
 
-def page(title, child, tag, can_pop=True, header_title=True, header_end=None):
+def page(title, child, tag, can_pop=True, header_title=True, header_end=None, closable=True):
     toolbar = Adw.ToolbarView()
     header = Adw.HeaderBar()
     header.set_show_title(header_title)
+    header.set_show_end_title_buttons(closable)  # not in a kiosk: closing it there leaves a bare console
     if header_end:
         header.pack_end(header_end())  # a fresh widget per page: one can't sit in two headers
     toolbar.add_top_bar(header)
@@ -364,6 +365,9 @@ class RunnerUI:
         self.log_scroll.add_css_class("nl-logbox")
         expander = Gtk.Expander(label="Show details")
         expander.set_child(self.log_scroll)
+        # Opened: at the latest lines (it follows them from there)
+        expander.connect("notify::expanded", lambda e, _: e.get_expanded() and GLib.idle_add(
+            lambda: self.logview.scroll_to_mark(self.live_mark, 0, False, 0, 1) and False))
         return expander
 
     def on_line(self, line):

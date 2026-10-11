@@ -1,0 +1,51 @@
+#!/bin/sh
+# Nothing Liquid: Windows in the boot menu (installed as /etc/grub.d/35_windows).
+# Through the firmware's own "Windows Boot Manager" entry when it has one (GRUB's
+# bootnext, then a restart): Windows starts exactly as it does on its own, so
+# BitLocker doesn't ask for its recovery key. Without that entry, straight from
+# the EFI partition that holds it. Instead of os-prober, which lists it from the
+# EFI partition only, and some firmware boot entries twice.
+set -e
+
+if [ -d /sys/firmware/efi ] && command -v efibootmgr >/dev/null 2>&1; then
+  num="$(efibootmgr 2>/dev/null | sed -n 's/^Boot\([0-9A-Fa-f]\{4\}\)\*\{0,1\} *Windows Boot Manager.*/\1/p' | head -n 1)"
+  if [ -n "$num" ]; then
+    echo "Adding boot menu entry for Windows (its firmware entry, Boot$num)" >&2
+    cat <<EOF
+menuentry 'Windows' --class windows --class os \$menuentry_id_option 'windows' {
+  if bootnext $num; then
+    reboot
+  fi
+}
+EOF
+    exit 0
+  fi
+fi
+
+mnt="$(mktemp -d)"
+for part in $(lsblk -nrpo NAME,PARTTYPE,FSTYPE | awk 'tolower($2) == "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" && $3 == "vfat" { print $1 }'); do
+  dir="$(findmnt -nro TARGET "$part" | head -n 1)"
+  own=""
+  if [ -z "$dir" ]; then
+    mount -o ro "$part" "$mnt" 2>/dev/null || continue
+    dir="$mnt"
+    own=1
+  fi
+  file="$(cd "$dir" && find . -maxdepth 4 -ipath './efi/microsoft/boot/bootmgfw.efi' 2>/dev/null | head -n 1)"
+  [ -n "$own" ] && umount "$mnt"
+  if [ -n "$file" ]; then
+    uuid="$(blkid -s UUID -o value "$part")"
+    echo "Adding boot menu entry for Windows (on $part)" >&2
+    cat <<EOF
+menuentry 'Windows' --class windows --class os \$menuentry_id_option 'windows' {
+  insmod part_gpt
+  insmod fat
+  insmod chain
+  search --no-floppy --fs-uuid --set=root $uuid
+  chainloader ${file#.}
+}
+EOF
+    break
+  fi
+done
+rmdir "$mnt"

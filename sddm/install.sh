@@ -38,13 +38,17 @@ SHELL_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/illogical-impulse/config.json"
 say() { printf '\033[1m·\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m!\033[0m %s\n' "$*" >&2; exit 1; }
 
-current_theme() { sed -n 's/^Current=//p' "$CONF" 2>/dev/null | tail -1; }
+# The theme SDDM uses now: sddm.conf or its drop-ins (a fresh Arch has neither file
+# set, or no sddm.conf at all)
+current_theme() { cat "$CONF" /etc/sddm.conf.d/*.conf 2>/dev/null | sed -n 's/^Current=//p' | tail -1 || true; }
 
 if [[ "${1:-}" == "--uninstall" ]]; then
-  previous="$(cat "$DEST/.previous-theme" 2>/dev/null || true)"
-  [[ -n "$previous" ]] || die "don't know which theme to go back to ($DEST/.previous-theme is missing)"
-  say "switching the login screen back to $previous"
-  sudo sed -i "s/^Current=.*/Current=$previous/" "$CONF"
+  previous="$(cat "$DEST/.previous-theme" 2>/dev/null || true)"   # none: SDDM's own default
+  say "switching the login screen back to ${previous:-the default one}"
+  if grep -q '^Current=nothing-liquid' "$CONF" 2>/dev/null; then
+    if [[ -n "$previous" ]]; then sudo sed -i "s/^Current=.*/Current=$previous/" "$CONF"
+    else sudo sed -i '/^Current=nothing-liquid/d' "$CONF"; fi
+  fi
   sudo systemctl disable --now nothing-liquid-login-keys.service 2>/dev/null || true
   sudo rm -f /etc/sddm.conf.d/10-nothing-liquid.conf "$GREETER_CONF" "$KEYS_UNIT" "$POWER_KEY_CONF"
   sudo systemctl reload systemd-logind # the power button shuts down again

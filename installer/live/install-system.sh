@@ -91,7 +91,7 @@ else
   if (( esp_free < 16 )); then   # no EFI partition, or too full for GRUB: one of our own
     say "making an EFI partition (${esp:-none found}${esp:+ has ${esp_free} MB free})"
     sgdisk -n "0:$first:+512M" -t 0:ef00 -c 0:NothingLiquidEFI "$NL_DISK"
-    first=$(( first + 512 * 2048 ))
+    first=$(( first + 512 * 1024 * 1024 / $(blockdev --getss "$NL_DISK") ))
     NEW_ESP=1
   fi
   say "using the free space on $NL_DISK: sectors $first to $last"
@@ -134,11 +134,11 @@ mount "$ESP" "$T/efi"
 # ── 3. the base system ───────────────────────────────────────────────────────
 step base
 pkgs=(base linux linux-firmware sof-firmware btrfs-progs dosfstools ntfs-3g
-      grub grub-btrfs inotify-tools efibootmgr os-prober
+      grub grub-btrfs inotify-tools efibootmgr
       snapper snap-pac zram-generator pacman-contrib
       networkmanager polkit sudo nano git man-db
       sddm xorg-server
-      cage python-gobject gtk4 libadwaita adwaita-fonts)   # cage and the window: the first start
+      cage python-gobject python-cairo gtk4 libadwaita adwaita-fonts)   # cage and the window: the first start
 grep -q GenuineIntel /proc/cpuinfo && pkgs+=(intel-ucode)
 grep -q AuthenticAMD /proc/cpuinfo && pkgs+=(amd-ucode)
 [[ "$NL_ENCRYPT" == 1 ]] && pkgs+=(cryptsetup)
@@ -153,6 +153,16 @@ done
 (( NVIDIA )) && pkgs+=(nvidia-open nvidia-utils)
 mapfile -t pkgs < <(printf '%s\n' "${pkgs[@]}" | awk '!seen[$0]++')
 say "installing: ${pkgs[*]}"
+# The USB's mirror list starts out empty (all commented). Arch's worldwide CDN
+# first (fast nearly everywhere, and never a stale mirror), then the fastest
+# recent mirrors as a fallback. The installed system keeps this list.
+if ! grep -q '^Server' /etc/pacman.d/mirrorlist; then
+  say "finding fast download servers"
+  ranked="$(reflector --protocol https --latest 10 --sort rate --connection-timeout 3 --download-timeout 5 \
+    2>/dev/null | grep '^Server' || true)"
+  printf '# Nothing Liquid: Arch'"'"'s CDN, then the fastest mirrors when it was installed\n%s\n%s\n' \
+    'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch' "$ranked" > /etc/pacman.d/mirrorlist
+fi
 pacman -Sy --noconfirm archlinux-keyring >/dev/null
 pacstrap -K "$T" "${pkgs[@]}"
 
@@ -231,10 +241,13 @@ chmod 600 "$T"/boot/initramfs-*.img
 
 sed -i -e 's/^GRUB_DISTRIBUTOR=.*/GRUB_DISTRIBUTOR="Nothing Liquid"/' \
        -e 's/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=5/' \
-       -e "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$cmdline\"|" \
-       -e 's/^#\?GRUB_DISABLE_OS_PROBER=.*/GRUB_DISABLE_OS_PROBER=false/' "$T/etc/default/grub"
+       -e "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$cmdline\"|" "$T/etc/default/grub"
 [[ "$NL_ENCRYPT" == 1 ]] && sed -i 's/^#\?GRUB_ENABLE_CRYPTODISK=.*/GRUB_ENABLE_CRYPTODISK=y/' "$T/etc/default/grub"
-grep -q '^GRUB_DISABLE_OS_PROBER=false' "$T/etc/default/grub" || echo 'GRUB_DISABLE_OS_PROBER=false' >> "$T/etc/default/grub"
+# Windows comes from our 35_windows (by its firmware entry, so BitLocker stays
+# quiet), not os-prober; and no menu entry for every firmware boot option
+printf '\n# Nothing Liquid: Windows is in the menu through /etc/grub.d/35_windows\nGRUB_DISABLE_OS_PROBER=true\nGRUB_DISABLE_BOOTNEXT=true\n' \
+  >> "$T/etc/default/grub"
+install -m 755 "$HERE/35_windows" "$T/etc/grub.d/35_windows"
 sed -i 's|^#\?GRUB_BTRFS_SUBMENUNAME=.*|GRUB_BTRFS_SUBMENUNAME="Nothing Liquid snapshots"|' "$T/etc/default/grub-btrfs/config"
 in_target grub-install --target=x86_64-efi --efi-directory=/efi --bootloader-id="Nothing Liquid" --recheck
 in_target grub-mkconfig -o /boot/grub/grub.cfg
@@ -275,8 +288,9 @@ git -C "$repo" remote set-url origin "$NL_REPO_URL"
 git -C "$repo" config --unset submodule.dots.url
 git -C "$repo" config --unset submodule.hyprglass.url
 git -C "$repo" submodule -q sync   # back to GitHub, for updates
-uid="$(in_target id -u "$NL_USER")"
-chown -R "$uid:$uid" "$home/.local"
+in_target chown -R "$NL_USER:$NL_USER" "/home/$NL_USER/.local"
+# The USB's dot-matrix font, for the first start's screen and the desktop's titles
+[[ -d /usr/share/fonts/nothing-liquid ]] && cp -r /usr/share/fonts/nothing-liquid "$T/usr/share/fonts/"
 mkdir -p "$T/etc/nothing-liquid"
 printf '%s\n' "$NL_PREFS" > "$T/etc/nothing-liquid/first-boot.json"
 

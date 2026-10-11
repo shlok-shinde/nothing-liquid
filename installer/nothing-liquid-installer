@@ -96,8 +96,9 @@ except (ImportError, ValueError) as e:
              "Install them with:  sudo pacman -S --needed python-gobject gtk4 libadwaita")
 
 sys.path.insert(0, str(HERE))
+import nlui  # noqa: E402
 from nlui import (ACCENTS, FONTS, KEYS, SHOTS, DotProgress, Runner, RunnerUI, big_button,  # noqa: E402
-                  column, label, load_css, page, status_dot)
+                  column, label, load_css, status_dot)
 
 DEMO = "--demo" in sys.argv
 FIRST_BOOT = "--first-boot" in sys.argv
@@ -108,6 +109,11 @@ FIRST_BOOT_DONE = ("sudo rm -f /etc/sddm.conf.d/zz-nothing-liquid-first-boot.con
                    f"{FIRST_BOOT_PREFS} && printf '[Last]\\nUser=%s\\nSession=/usr/share/wayland-sessions/hyprland.desktop\\n' "
                    "\"$USER\" | sudo tee /var/lib/sddm/state.conf >/dev/null && sudo pacman -Rns --noconfirm cage")
 DRY = "--dry-run" in sys.argv
+
+
+def page(*args, **kw):
+    # At the first start it fills the screen of a kiosk: closing it would leave nothing
+    return nlui.page(*args, closable=not FIRST_BOOT, **kw)
 
 
 # ── what this computer has ───────────────────────────────────────────────────

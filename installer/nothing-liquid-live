@@ -200,7 +200,7 @@ class Window(RunnerUI, Adw.ApplicationWindow):
         return b
 
     def page(self, title, box, tag, **kw):
-        return page(title, box, tag, header_end=self.power_button, **kw)
+        return page(title, box, tag, header_end=self.power_button, closable=DEMO, **kw)
 
     # ── welcome, and the keyboard ──
     def welcome_page(self):
