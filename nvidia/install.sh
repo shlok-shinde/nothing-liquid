@@ -62,7 +62,7 @@ id="$(<"$gpu/device")"
 
 # ── the driver ───────────────────────────────────────────────────────────────
 pkgs=()
-if pacman -Qq | grep -qE '^nvidia(-[0-9]+xx)?-utils$'; then
+if grep -qE '^nvidia(-[0-9]+xx)?-utils$' < <(pacman -Qq); then
   say "NVIDIA's driver is installed: keeping it"
 else
   # One headers package per installed kernel, for DKMS to build the module against
@@ -73,8 +73,8 @@ else
   say "NVIDIA's driver, for ${kernels[*]}"
 fi
 pacman -Qq nvidia-prime >/dev/null 2>&1 || pkgs+=(nvidia-prime)
-if pacman-conf --repo-list 2>/dev/null | grep -qx multilib; then
-  pacman -Qq | grep -qE '^lib32-nvidia(-[0-9]+xx)?-utils$' || pkgs+=(lib32-nvidia-utils)  # (Steam and 32-bit games)
+if grep -qx multilib < <(pacman-conf --repo-list 2>/dev/null); then
+  grep -qE '^lib32-nvidia(-[0-9]+xx)?-utils$' < <(pacman -Qq) || pkgs+=(lib32-nvidia-utils)  # (Steam and 32-bit games)
 fi
 # The power profiles: power-profiles-daemon, or tuned's stand-in for it; TLP and
 # auto-cpufreq do the same job their own way and conflict with it
