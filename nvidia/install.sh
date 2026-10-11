@@ -12,6 +12,8 @@
 #     nvidia-utils, and nvidia-prime for prime-run <app>
 #   - runtime power management (NVreg_DynamicPowerManagement=0x02): the GPU powers
 #     off whenever nothing uses it, and on again when an app does
+#   - SDDM's login screen on the integrated GPU (greeter-xorg.conf): its X server
+#     otherwise takes the NVIDIA GPU too and keeps it through your whole session
 #   - /dev/dri/nl-igpu and nl-dgpu (61-nothing-liquid-gpu.rules), so Hyprland can be
 #     told to run on the integrated GPU: a Hyprland holding the NVIDIA GPU open keeps
 #     it awake all the time (the dots' hyprland/gpu.lua does that at login)
@@ -25,6 +27,9 @@ LIB=/usr/local/lib/nothing-liquid
 UNIT=/etc/systemd/system/nothing-liquid-gpu-power.service
 RULES=/etc/udev/rules.d/61-nothing-liquid-gpu.rules
 MODPROBE=/etc/modprobe.d/nothing-liquid-nvidia.conf
+GREETER_XORG=/etc/nothing-liquid/greeter-xorg.conf
+SDDM_DROPIN=/etc/sddm.conf.d/30-nothing-liquid-gpu.conf
+SDDM_CONF=/etc/sddm.conf
 
 say()  { printf '\033[1m·\033[0m %s\n' "$*"; }
 warn() { printf '\033[31m·\033[0m %s\n' "$*"; }
@@ -37,7 +42,8 @@ case "${1:-}" in
     say "bringing the GPU back if power saver took it off"
     [[ -x "$LIB/gpu-power" ]] && sudo "$LIB/gpu-power" on
     sudo systemctl disable --now nothing-liquid-gpu-power.service 2>/dev/null || true
-    sudo rm -f "$UNIT" "$RULES" "$MODPROBE" "$LIB/gpu-power"
+    [[ -f "$SDDM_CONF" ]] && sudo sed -i "s| -config $GREETER_XORG||" "$SDDM_CONF"
+    sudo rm -f "$UNIT" "$RULES" "$MODPROBE" "$LIB/gpu-power" "$GREETER_XORG" "$SDDM_DROPIN"
     sudo rmdir --ignore-fail-on-non-empty "$LIB" 2>/dev/null || true
     sudo systemctl daemon-reload
     sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=drm
@@ -109,6 +115,23 @@ sudo udevadm control --reload
 sudo udevadm trigger --subsystem-match=drm --action=change
 sudo udevadm settle
 
+# SDDM's X server: the integrated GPU alone. /etc/sddm.conf wins over the drop-ins,
+# so a ServerArguments line there gets the option itself.
+dm="$(basename "$(readlink -f /etc/systemd/system/display-manager.service)" .service)"
+sddm_server="$(cat /usr/lib/sddm/sddm.conf.d/*.conf /etc/sddm.conf.d/*.conf "$SDDM_CONF" 2>/dev/null \
+  | sed -n 's/^DisplayServer=//p' | tail -1)"
+if [[ "$dm" == sddm && "${sddm_server:-x11}" == x11 ]]; then
+  say "the login screen on the integrated GPU (from the next time it shows)"
+  sudo install -D -m 644 "$HERE/greeter-xorg.conf" "$GREETER_XORG"
+  if grep -q '^ServerArguments=' "$SDDM_CONF" 2>/dev/null; then
+    grep -q -- "-config $GREETER_XORG" "$SDDM_CONF" \
+      || sudo sed -i "s|^ServerArguments=.*|& -config $GREETER_XORG|" "$SDDM_CONF"
+  else
+    printf '%s\n' "# Nothing Liquid (nvidia/install.sh): the login screen's X server on the integrated GPU" \
+      "[X11]" "ServerArguments=-nolisten tcp -config $GREETER_XORG" | sudo tee "$SDDM_DROPIN" >/dev/null
+  fi
+fi
+
 say "the GPU follows the power profile (nothing-liquid-gpu-power.service)"
 sudo install -D -m 755 "$HERE/gpu-power" "$LIB/gpu-power"
 sudo install -D -m 644 "$HERE/nothing-liquid-gpu-power.service" "$UNIT"
@@ -121,7 +144,8 @@ sudo systemctl enable nothing-liquid-gpu-power.service >/dev/null
 sudo systemctl restart nothing-liquid-gpu-power.service
 
 if [[ -n "$other" ]]; then
-  say "done. From your next login Hyprland runs on the integrated GPU, and the NVIDIA one"
+  say "done. Log out and in again: from then on Hyprland and the login screen run on the"
+  say "  integrated GPU, and the NVIDIA one"
   say "  powers off: power saver keeps it off, balanced turns it on for apps that use it."
   say "  Run an app on it: prime-run <app>.  See what it's doing: nvidia/install.sh --status"
 fi

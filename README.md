@@ -338,6 +338,9 @@ gives the two GPUs fixed names, `/dev/dri/nl-igpu` and `nl-dgpu`. Hyprland's
 `AQ_DRM_DEVICES` is a list split on `:`, and the `by-path` names contain colons,
 so they can't be used there. It also sets up `nothing-liquid-gpu-power.service`,
 which follows `power-profiles-daemon` (installed if you have no profile daemon).
+SDDM's login screen gets the integrated GPU alone too (`AutoAddGPU off`). Its X
+server otherwise takes the NVIDIA GPU as a second screen and keeps running
+through your whole session.
 In power saver, a game still running on the GPU keeps it on until you close it;
 the service tries again every few seconds. `--uninstall` takes all of this out
 and brings the GPU back. The driver stays.
