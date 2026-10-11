@@ -104,12 +104,16 @@ def timezones():
 
 
 def guess_timezone():
-    try:
-        tz = subprocess.run(["curl", "-fsS", "--max-time", "4", "https://ipapi.co/timezone"],
-                            capture_output=True, text=True).stdout.strip()
-        return tz if re.fullmatch(r"[A-Za-z_]+(/[A-Za-z0-9_+-]+)*", tz) else None
-    except OSError:
-        return None
+    # Two services, since either may turn a request away (ipapi.co rate-limits)
+    for url in ("https://ipinfo.io/timezone", "https://ipapi.co/timezone"):
+        try:
+            tz = subprocess.run(["curl", "-fsS", "--max-time", "4", url],
+                                capture_output=True, text=True).stdout.strip()
+        except OSError:
+            return None
+        if re.fullmatch(r"[A-Za-z_]+(/[A-Za-z0-9_+-]+)*", tz):
+            return tz
+    return None
 
 
 DEMO_DISKS = [  # a 512 GB laptop with Windows, C: shrunk to leave room, and a USB stick
@@ -540,6 +544,15 @@ class Window(RunnerUI, Adw.ApplicationWindow):
         start_zone = guess if guess in zones else "UTC"
         if start_zone in zones:
             zone.set_selected(zones.index(start_zone))
+        if guess not in zones and not DEMO:  # (no internet yet when it opened, before Wi-Fi): ask again
+            def late(tz):
+                picked = zone.get_selected()
+                untouched = picked >= len(zones) or zones[picked] == start_zone  # (they didn't pick one meanwhile)
+                if tz in zones and untouched:
+                    self.zone_guess = tz
+                    zone.set_selected(zones.index(tz))
+
+            threading.Thread(target=lambda: GLib.idle_add(late, guess_timezone()), daemon=True).start()
         enc = Adw.SwitchRow(title="Encrypt Nothing Liquid",
                             subtitle="Your files can't be read without the password, even with the disk taken out. "
                                      "The computer asks for it every time it starts.")

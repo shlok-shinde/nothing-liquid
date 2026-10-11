@@ -153,15 +153,24 @@ done
 (( NVIDIA )) && pkgs+=(nvidia-open nvidia-utils)
 mapfile -t pkgs < <(printf '%s\n' "${pkgs[@]}" | awk '!seen[$0]++')
 say "installing: ${pkgs[*]}"
-# The USB's mirror list starts out empty (all commented). Arch's worldwide CDN
-# first (fast nearly everywhere, and never a stale mirror), then the fastest
-# recent mirrors as a fallback. The installed system keeps this list.
+# The USB's mirror list starts out empty (all commented). pacman takes everything
+# from the first server that answers, so they go fastest first: Arch's two CDNs,
+# the freshest mirrors in this country and worldwide, each timed on 1 MB of a real
+# file (a CDN can be slow in one country and fast in the next). The installed
+# system keeps this list, for the desktop's own downloads at the first start too.
 if ! grep -q '^Server' /etc/pacman.d/mirrorlist; then
   say "finding fast download servers"
-  ranked="$(reflector --protocol https --latest 10 --sort rate --connection-timeout 3 --download-timeout 5 \
-    2>/dev/null | grep '^Server' || true)"
-  printf '# Nothing Liquid: Arch'"'"'s CDN, then the fastest mirrors when it was installed\n%s\n%s\n' \
-    'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch' "$ranked" > /etc/pacman.d/mirrorlist
+  mirrors() { reflector --protocol https --latest 4 "$@" 2>/dev/null | sed -n 's|^Server = \(.*\)\$repo/os/\$arch$|\1|p' || true; }
+  country="$(curl -fsS -m 4 https://ipinfo.io/country 2>/dev/null || true)"
+  near="$([[ "$country" =~ ^[A-Z]{2}$ ]] && mirrors --country "$country" || true)"
+  cdn="https://geo.mirror.pkgbuild.com/ https://fastly.mirror.pkgbuild.com/"
+  ranked="$(for m in $cdn $near $(mirrors); do
+      speed="$(curl -fso /dev/null -r 0-1048575 -m 4 -w '%{speed_download}' "${m}extra/os/x86_64/extra.db" || true)"
+      echo "${speed:-0} $m"
+    done | sort -rn | awk '$1 > 0 && !seen[$2]++ { print "Server = " $2 "$repo/os/$arch" }')"
+  printf '# Nothing Liquid: the fastest download servers when it was installed\n%s\n%s\n' \
+    "$ranked" 'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch' | awk '!seen[$0]++' > /etc/pacman.d/mirrorlist
+  say "  $(grep -m 3 '^Server' /etc/pacman.d/mirrorlist | cut -d/ -f3 | paste -sd ' ')"
 fi
 pacman -Sy --noconfirm archlinux-keyring >/dev/null
 pacstrap -K "$T" "${pkgs[@]}"
