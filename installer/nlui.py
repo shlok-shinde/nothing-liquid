@@ -215,7 +215,8 @@ class Runner:
         else:
             # Anything else that stops on a question: give it a moment first
             stamp = self.stall = self.stall + 1
-            if re.search(r"[:?>]$", live):
+            # (not a path being worked on, like fc-cache's "/usr/share/fonts/TTF:")
+            if re.search(r"[:?>]$", live) and not re.fullmatch(r"\s*/\S*:", live):
                 GLib.timeout_add(3000, self._stalled, stamp, self.line_no, live)
             return
         self._prompt(kind, live)
@@ -371,6 +372,7 @@ class RunnerUI:
         return expander
 
     def on_line(self, line):
+        self.drop_guessed()
         end = self.buffer.get_end_iter()
         self.buffer.delete(self.buffer.get_iter_at_mark(self.live_mark), end)
         self.buffer.insert(self.buffer.get_end_iter(), line + "\n")
@@ -381,6 +383,8 @@ class RunnerUI:
         self.scroll_log()
 
     def on_live(self, text):
+        if text.rstrip() != getattr(self, "guessed", None):
+            self.drop_guessed()
         # Throttled: progress bars redraw many times a second
         first = self.pending_live is None
         self.pending_live = text
@@ -404,6 +408,7 @@ class RunnerUI:
     # ── questions from the terminal ──
     def on_prompt(self, kind, text, recent, token):
         self.token = token
+        self.guessed = text.rstrip() if kind == "text" else None
         question = re.sub(r"^\s*(::|==>|->)\s*", "", text).strip()
         if kind == "password":
             self.ask_password(any("Sorry, try again" in line for line in recent[-3:]))
@@ -433,6 +438,12 @@ class RunnerUI:
         self.drop_dialog()
         self.dialog = dialog
         dialog.present(self)
+
+    def drop_guessed(self):
+        # Output went on after a line that only looked like a question: it wasn't one
+        if getattr(self, "guessed", None) is not None:
+            self.guessed = None
+            self.drop_dialog()
 
     def drop_dialog(self):
         # The question it answered is gone (the step ended): don't leave it up
