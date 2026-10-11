@@ -341,6 +341,10 @@ Keeping your own tweaks on a branch of the dots fork? Point the installer at it:
   plugin this extends (BSD 3-Clause)
 - Look inspired by Apple's macOS Tahoe Liquid Glass and Nothing OS. Not
   affiliated with, or endorsed by, Apple or Nothing.
+- The default wallpaper (the samurai, `nothing-liquid-wallpaper.jpg`):
+  artwork by its signing artist, found on
+  [peakpx](https://www.peakpx.com/en/hd-wallpaper-desktop-weatr). All rights
+  remain with the artist.
 
 ## Licence
 
