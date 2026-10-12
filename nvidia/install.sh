@@ -66,6 +66,27 @@ id="$(<"$gpu/device")"
 (( id >= 0x1e00 )) || die "this NVIDIA GPU ($id) is older than an RTX 20 / GTX 16: NVIDIA's open driver doesn't support it"
 [[ -n "$other" ]] || warn "no integrated GPU next to it (a desktop PC?): the driver goes in, but the GPU stays on all the time"
 
+# Anything else switching the GPU on and off fights with this, and can leave it worse
+# off: a GPU unbound from its driver can't power itself down at all. Known tools,
+# then enabled local services whose scripts (and the scripts those call) unbind or
+# remove it. Named, not touched.
+conflicts=()
+for s in supergfxd optimus-manager nvidia-persistenced; do
+  systemctl is-enabled --quiet "$s.service" 2>/dev/null && conflicts+=("$s.service")
+done
+for u in /etc/systemd/system/*.service; do
+  [[ "$u" == "$UNIT" ]] && continue
+  systemctl is-enabled --quiet "${u##*/}" 2>/dev/null || continue
+  mapfile -t files < <(sed -n 's/^ExecStart=[-@!+:]*//p' "$u" | grep -oE '/[A-Za-z0-9_./-]+')
+  mapfile -t more < <(cat "${files[@]}" 2>/dev/null | grep -aoE '/(usr/local|etc|opt|home)/[A-Za-z0-9_./-]+' | sort -u)
+  grep -qsaE 'drivers/nvidia/unbind|devices/[^ ]*/remove|bbswitch' "$u" "${files[@]}" "${more[@]}" \
+    && conflicts+=("${u##*/}")
+done
+for s in "${conflicts[@]}"; do
+  warn "$s also switches the NVIDIA GPU (or keeps it awake): turn it off, then restart:"
+  warn "  sudo systemctl disable --now $s"
+done
+
 # ── the driver ───────────────────────────────────────────────────────────────
 pkgs=()
 if grep -qE '^nvidia(-[0-9]+xx)?-utils$' < <(pacman -Qq); then
