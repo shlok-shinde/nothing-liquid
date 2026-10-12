@@ -162,7 +162,8 @@ apply "$current"
 coproc WATCH { exec gdbus monitor --system --dest net.hadess.PowerProfiles --object-path /net/hadess/PowerProfiles; }
 while true; do
   if read -r -t "$RETRY" line <&"${WATCH[0]}"; then
-    [[ "$line" == *ActiveProfile* ]] || continue
+    # A new profile, or power-profiles-daemon (re)starting: it may come up after this
+    [[ "$line" == *ActiveProfile* || "$line" == *"is owned by"* ]] || continue
     new="$(profile)"
     [[ "$new" == "$current" ]] && continue
     current="$new"
