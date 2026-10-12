@@ -8,9 +8,9 @@
 #   1. builds the glass plugin (hyprglass fork, branch nothing-liquid) if needed, against
 #      your Hyprland's headers, and
 #      installs a stripped copy (~1 MB) to ~/.local/lib/nothing-liquid/hyprglass.so
-#   2. copies the files the dots fork changes into ~/.config, refusing to touch
-#      any file you have edited yourself (unless --force). Running it again
-#      updates an earlier install.
+#   2. copies the files the dots fork changes into ~/.config (and removes the ones
+#      it removes), refusing to touch any file you have edited yourself (unless
+#      --force). Running it again updates an earlier install.
 #   3. turns on appearance.liquidGlass in ~/.config/illogical-impulse/config.json
 #      (starting that file if the shell hasn't written one yet)
 #   4. inside Hyprland: swaps in the new plugin, reloads Hyprland, restarts the
@@ -94,8 +94,10 @@ known_version() {
 }
 
 mapfile -t files < <(git -C "$DOTS" diff --name-only --diff-filter=d "$BASE_COMMIT".."$REF" -- dots/)
+# and the files the fork removes (end-4 has them, the fork doesn't): gone from ~/.config too
+mapfile -t gone < <(git -C "$DOTS" diff --name-only --diff-filter=D "$BASE_COMMIT".."$REF" -- dots/)
 blocked=0
-for f in "${files[@]}"; do
+for f in "${files[@]}" "${gone[@]}"; do
   rel="${f#dots/}"; live="$HOME/$rel"
   if [[ -e "$live" ]] && ! known_version "$f" "$live"; then
     warn "you have edited ~/$rel yourself"
@@ -125,6 +127,19 @@ for f in "${files[@]}"; do
   run mkdir -p "$(dirname "$live")"
   if ((DRY)); then echo "  would: write $REF:$f to $live"; else git -C "$DOTS" show "$REF:$f" > "$live"; fi
   say "updated ~/$rel"
+done
+
+for f in "${gone[@]}"; do
+  rel="${f#dots/}"; live="$HOME/$rel"
+  [[ -e "$live" ]] || continue
+  run mkdir -p "$(dirname "$BACKUP/$rel")"
+  run cp -a "$live" "$BACKUP/$rel"
+  if [[ ! -e "$ORIG_SEEN/$rel" && ! -e "$ORIG_SEEN/.new/$rel" ]]; then
+    run mkdir -p "$(dirname "$ORIG/$rel")"; run cp -a "$live" "$ORIG/$rel"
+  fi
+  run rm -f "$live"
+  run rmdir --ignore-fail-on-non-empty "$(dirname "$live")"
+  say "removed ~/$rel"
 done
 
 # ── 3. shell config ──────────────────────────────────────────────────────────
