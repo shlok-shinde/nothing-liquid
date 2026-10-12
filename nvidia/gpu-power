@@ -6,8 +6,8 @@
 #                 loses power (D3cold, 0 W). Nothing can wake it, not even prime-run.
 #   balanced      on demand: NVIDIA's runtime power management turns it on when an app
 #                 uses it (prime-run <app>) and off again when it's idle.
-#   performance   on, with NVIDIA's Dynamic Boost (nvidia-powerd), which shifts power
-#                 from the CPU to the GPU under load.
+#   performance   on demand too, plus NVIDIA's Dynamic Boost (nvidia-powerd), which
+#                 shifts power from the CPU to the GPU under load.
 #
 #   gpu-power           follow the profile (nothing-liquid-gpu-power.service, as root)
 #   gpu-power status    what the GPU is doing now (as anyone)

@@ -315,7 +315,7 @@ power profile you pick in the shell:
 |---|---|
 | Power saver | Off completely (0 W): once nothing uses it, it's taken off the PCI bus and its slot loses power. Nothing can wake it, not even `prime-run` |
 | Balanced | On demand: off while idle, on as soon as an app uses it (`prime-run <app>`, or a game) |
-| Performance | On, with NVIDIA's Dynamic Boost, which gives the GPU power the CPU isn't using |
+| Performance | On demand too, plus NVIDIA's Dynamic Boost, which gives the GPU power the CPU isn't using |
 
 For that, Hyprland runs on the integrated GPU. A Hyprland that opens the NVIDIA
 GPU keeps it awake all day, a few watts gone for nothing. The NVIDIA GPU joins
