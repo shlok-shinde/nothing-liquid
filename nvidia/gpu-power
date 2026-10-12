@@ -1,27 +1,24 @@
 #!/usr/bin/env bash
-# Nothing Liquid: the NVIDIA GPU of a laptop follows the power profile
-# (power-profiles-daemon; the shell's power button sets it):
+# Nothing Liquid: the NVIDIA GPU of a laptop, off whenever nothing uses it.
 #
-#   power-saver   off: once nothing uses it, it's taken off the PCI bus and its slot
-#                 loses power (D3cold, 0 W). Nothing can wake it, not even prime-run.
-#   balanced      on demand: NVIDIA's runtime power management turns it on when an app
-#                 uses it (prime-run <app>) and off again when it's idle.
-#   performance   on demand too, plus NVIDIA's Dynamic Boost (nvidia-powerd), which
-#                 shifts power from the CPU to the GPU under load.
+# NVIDIA's runtime power management (NVreg_DynamicPowerManagement=0x02, from
+# nvidia/install.sh) cuts the GPU's power (D3cold, 0 W) whenever no app uses it, and
+# turns it on again for the app that does, in every power profile. The GPU stays
+# visible all the time, so every app and service finds it, whenever it starts.
+# This follows the power profile (power-profiles-daemon) for the one thing left:
+#
+#   performance   NVIDIA's Dynamic Boost (nvidia-powerd), which shifts power from the
+#                 CPU to the GPU under load; off in balanced and power saver
 #
 #   gpu-power           follow the profile (nothing-liquid-gpu-power.service, as root)
-#   gpu-power status    what the GPU is doing now (as anyone)
-#   gpu-power on        bring it back now (as root; the uninstall does this)
-#
-# Only on laptops where another GPU drives the screen: a GPU showing the desktop is
-# never taken away (Hyprland would hold it open anyway, and that's checked for).
+#   gpu-power status    what the GPU is doing now, and what's using it (as anyone)
+#   gpu-power on        put back a GPU that an earlier version took off the bus (as root)
 set -uo pipefail
 shopt -s nullglob
 
 RUN=/run/nothing-liquid
-REMOVED="$RUN/gpu-removed"   # what was taken off the bus: "<port> <function>..."
-STATE="$RUN/gpu-state"       # for status and the shell: off | on-demand | boost | waiting <who>
-RETRY=10                     # seconds between tries while something still uses the GPU
+REMOVED="$RUN/gpu-removed"   # (earlier versions took the GPU off the bus in power saver)
+STATE="$RUN/gpu-state"       # on-demand | boost
 
 log() { echo "$*"; }         # (to the journal)
 
@@ -33,30 +30,13 @@ nvidia_gpus() {
   done
 }
 
-# Is another GPU there to show the desktop? (no: a desktop PC with only the NVIDIA card)
-other_gpu() {
-  local d
-  for d in /sys/bus/pci/devices/*; do
-    [[ "$(<"$d/vendor")" != 0x10de && "$(<"$d/class")" == 0x03* ]] && return 0
-  done
-  return 1
-}
-
-# Every function in the GPU's slot (the GPU, its HDMI audio, USB-C controller...)
-slot_functions() { local f; for f in /sys/bus/pci/devices/"${1%.*}".*; do echo "${f##*/}"; done; }
-
-# The processes holding the GPU open: its /dev/dri nodes and NVIDIA's own /dev/nvidia*
+# The programs using the GPU: holding NVIDIA's /dev/nvidia<N> open (as root, all of
+# them; as you, yours). Hyprland's idle handle on the display node doesn't count.
 users() {
-  local gpu nodes=() n f
-  for gpu in "$@"; do
-    for n in /sys/bus/pci/devices/"$gpu"/drm/*; do
-      [[ "${n##*/}" == card[0-9]* || "${n##*/}" == renderD* ]] && nodes+=(-o -lname "/dev/dri/${n##*/}")
-    done
-  done
-  find /proc/[0-9]*/fd -maxdepth 1 \( -lname '/dev/nvidia*' "${nodes[@]}" \) -printf '%h\n' 2>/dev/null \
+  local pid
+  find /proc/[0-9]*/fd -maxdepth 1 -lname '/dev/nvidia[0-9]*' -printf '%h\n' 2>/dev/null \
     | cut -d/ -f3 | sort -u | while read -r pid; do
-      f="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | cut -d' ' -f1)"
-      [[ -n "$f" ]] && echo "${f##*/}"
+      cat "/proc/$pid/comm" 2>/dev/null
     done | sort -u | paste -sd' '
 }
 
@@ -66,82 +46,48 @@ powerd() {  # Dynamic Boost on or off, where the driver has it
 }
 
 gpu_on() {
-  if [[ -s "$REMOVED" ]]; then
-    local port
-    read -r port _ < "$REMOVED"
-    log "bringing the GPU back"
-    if [[ -e "/sys/bus/pci/devices/$port/rescan" ]]; then
-      echo 1 > "/sys/bus/pci/devices/$port/rescan"
-    else
-      echo 1 > /sys/bus/pci/rescan
-    fi
-    rm -f "$REMOVED"
+  [[ -s "$REMOVED" ]] || return 0
+  local port
+  read -r port _ < "$REMOVED"
+  log "bringing back the GPU an earlier version took off the bus"
+  if [[ -e "/sys/bus/pci/devices/$port/rescan" ]]; then
+    echo 1 > "/sys/bus/pci/devices/$port/rescan"
+  else
+    echo 1 > /sys/bus/pci/rescan
   fi
-}
-
-# Take the GPU off the bus; 1 (and the state "waiting <who>") while something uses it
-gpu_off() {
-  [[ -s "$REMOVED" ]] && return 0
-  local gpus who port f
-  mapfile -t gpus < <(nvidia_gpus)
-  ((${#gpus[@]})) || return 0
-  if ! other_gpu; then
-    log "the NVIDIA GPU is the only one: it stays on"
-    return 0
-  fi
-  powerd off
-  who="$(users "${gpus[@]}")"
-  if [[ -n "$who" ]]; then
-    [[ "$(cat "$STATE" 2>/dev/null)" == "waiting $who" ]] || log "power saver: waiting for $who to let go of the GPU"
-    echo "waiting $who" > "$STATE"
-    return 1
-  fi
-  port="$(basename "$(readlink -f "/sys/bus/pci/devices/${gpus[0]}/..")")"
-  local all=()
-  for f in "${gpus[@]}"; do mapfile -t -O "${#all[@]}" all < <(slot_functions "$f"); done
-  echo "$port ${all[*]}" > "$REMOVED"
-  # The extra functions first (audio, USB-C), the GPU last
-  for f in $(printf '%s\n' "${all[@]}" | sort -r); do
-    [[ -e "/sys/bus/pci/devices/$f/remove" ]] && echo 1 > "/sys/bus/pci/devices/$f/remove"
-  done
-  log "power saver: GPU off (${all[*]} taken off the bus)"
-  # What 0 W looks like: the slot itself without power (D3cold), a moment later
-  ( sleep 5; log "  its slot ($port) is now $(cat "/sys/bus/pci/devices/$port/power_state" 2>/dev/null)" ) &
-  return 0
+  rm -f "$REMOVED"
 }
 
 profile() { powerprofilesctl get 2>/dev/null || echo balanced; }
 
 apply() {
-  case "$1" in
-    power-saver)
-      if gpu_off; then echo off > "$STATE"; fi ;;
-    performance)
-      gpu_on; powerd on; echo boost > "$STATE" ;;
-    *)
-      gpu_on; powerd off; echo on-demand > "$STATE" ;;
-  esac
+  if [[ "$1" == performance ]]; then
+    powerd on; echo boost > "$STATE"
+  else
+    powerd off; echo on-demand > "$STATE"
+  fi
 }
 
 status() {
-  local gpus port mode
+  local gpus g who mode
   mode="$(cat "$STATE" 2>/dev/null || echo "not running")"
   echo "power profile:  $(profile)"
-  echo "GPU setting:    $mode"
+  case "$mode" in
+    on-demand) echo "GPU setting:    off whenever nothing uses it" ;;
+    boost) echo "GPU setting:    off whenever nothing uses it; Dynamic Boost on" ;;
+    *) echo "GPU setting:    $mode" ;;
+  esac
   mapfile -t gpus < <(nvidia_gpus)
-  if ((${#gpus[@]})); then
-    local g="/sys/bus/pci/devices/${gpus[0]}"
-    echo "GPU ${gpus[0]}: $(<"$g/power/runtime_status") ($(<"$g/power_state"))" \
-         "- on for $(( $(<"$g/power/runtime_active_time") / 1000 ))s," \
-         "off for $(( $(<"$g/power/runtime_suspended_time") / 1000 ))s since it started"
-    local who; who="$(users "${gpus[@]}")"
-    echo "using it now:   ${who:-nothing}"
-  elif [[ -s "$REMOVED" ]]; then
-    read -r port _ < "$REMOVED"
-    echo "GPU:            off the bus; its slot ($port) is $(<"/sys/bus/pci/devices/$port/power_state")"
-  else
+  if ((${#gpus[@]} == 0)); then
     echo "GPU:            no NVIDIA GPU found"
+    return
   fi
+  g="/sys/bus/pci/devices/${gpus[0]}"
+  echo "GPU ${gpus[0]}: $(<"$g/power/runtime_status") ($(<"$g/power_state"))" \
+       "- on for $(( $(<"$g/power/runtime_active_time") / 1000 ))s," \
+       "off for $(( $(<"$g/power/runtime_suspended_time") / 1000 ))s since it started"
+  who="$(users)"
+  echo "using it now:   ${who:-nothing}$( ((EUID)) && echo " (of your programs)")"
 }
 
 case "${1:-}" in
@@ -153,26 +99,21 @@ esac
 
 # ── follow the profile ───────────────────────────────────────────────────────
 mkdir -p "$RUN"
+gpu_on
 current="$(profile)"
 log "power profile: $current"
 apply "$current"
 
-# Every change of profile, as power-profiles-daemon announces it on D-Bus (and a
-# try every few seconds while power saver waits for an app to let go of the GPU)
+# Every change of profile, as power-profiles-daemon announces it on D-Bus; and
+# when the daemon itself (re)starts, which may be after this
 coproc WATCH { exec gdbus monitor --system --dest net.hadess.PowerProfiles --object-path /net/hadess/PowerProfiles; }
-while true; do
-  if read -r -t "$RETRY" line <&"${WATCH[0]}"; then
-    # A new profile, or power-profiles-daemon (re)starting: it may come up after this
-    [[ "$line" == *ActiveProfile* || "$line" == *"is owned by"* ]] || continue
-    new="$(profile)"
-    [[ "$new" == "$current" ]] && continue
-    current="$new"
-    log "power profile: $current"
-    apply "$current"
-  elif [[ -z "${WATCH_PID:-}" ]] || ! kill -0 "$WATCH_PID" 2>/dev/null; then
-    log "lost power-profiles-daemon; starting over"
-    exit 1   # (systemd restarts it)
-  elif [[ "$current" == power-saver && "$(cat "$STATE" 2>/dev/null)" == waiting* ]]; then
-    apply power-saver
-  fi
+while read -r line <&"${WATCH[0]}"; do
+  [[ "$line" == *ActiveProfile* || "$line" == *"is owned by"* ]] || continue
+  new="$(profile)"
+  [[ "$new" == "$current" ]] && continue
+  current="$new"
+  log "power profile: $current"
+  apply "$current"
 done
+log "lost power-profiles-daemon; starting over"
+exit 1   # (systemd restarts it)

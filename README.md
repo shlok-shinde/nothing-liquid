@@ -308,14 +308,12 @@ checks and `./install.sh --dry-run`; neither changes anything).
 ### NVIDIA RTX laptops
 
 This branch (`nvidia`) is for laptops with an NVIDIA RTX or GTX 16 card next to
-an Intel or AMD GPU, which is most gaming laptops. There the NVIDIA GPU follows the
-power profile you pick in the shell:
-
-| Profile | The NVIDIA GPU |
-|---|---|
-| Power saver | Off completely (0 W): once nothing uses it, it's taken off the PCI bus and its slot loses power. Nothing can wake it, not even `prime-run` |
-| Balanced | On demand: off while idle, on as soon as an app uses it (`prime-run <app>`, or a game) |
-| Performance | On demand too, plus NVIDIA's Dynamic Boost, which gives the GPU power the CPU isn't using |
+an Intel or AMD GPU, which is most gaming laptops. There the NVIDIA GPU is off
+(D3cold, 0 W) whenever nothing uses it, and on for as long as an app does: a game,
+Ollama, `prime-run <app>`. On the laptop this was made on, it powers off about 25
+seconds after the last app lets go. It never disappears, so every app and
+service finds it, whenever it started. In the performance profile NVIDIA's
+Dynamic Boost runs as well, giving the GPU power the CPU isn't using.
 
 For that, Hyprland runs on the integrated GPU. A Hyprland that opens the NVIDIA
 GPU keeps it awake all day, a few watts gone for nothing. The NVIDIA GPU joins
@@ -336,14 +334,14 @@ modules, built for each of your kernels, plus `nvidia-utils` and `nvidia-prime`.
 It turns on runtime power management (`NVreg_DynamicPowerManagement=0x02`) and
 gives the two GPUs fixed names, `/dev/dri/nl-igpu` and `nl-dgpu`. Hyprland's
 `AQ_DRM_DEVICES` is a list split on `:`, and the `by-path` names contain colons,
-so they can't be used there. It also sets up `nothing-liquid-gpu-power.service`,
-which follows `power-profiles-daemon` (installed if you have no profile daemon).
-SDDM's login screen gets the integrated GPU alone too (`AutoAddGPU off`). Its X
-server otherwise takes the NVIDIA GPU as a second screen and keeps running
-through your whole session.
-In power saver, a game still running on the GPU keeps it on until you close it;
-the service tries again every few seconds. `--uninstall` takes all of this out
-and brings the GPU back. The driver stays.
+so they can't be used there. Hyprland also starts with Mesa's EGL alone:
+NVIDIA's, which glvnd loads first, keeps the GPU open. Apps get both again once
+Hyprland is up. SDDM's login screen gets the integrated GPU alone too
+(`AutoAddGPU off`). Its X server otherwise takes the NVIDIA GPU as a second screen
+and keeps running through your whole session. `nothing-liquid-gpu-power.service`
+turns Dynamic Boost on in the performance profile and off in the others, following
+`power-profiles-daemon` (installed if you have no profile daemon). `--uninstall`
+takes all of this out. The driver stays.
 
 The installer window does this too, as one more step, when it finds such a
 laptop. To get it with this branch:

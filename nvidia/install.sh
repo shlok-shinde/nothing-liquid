@@ -17,9 +17,9 @@
 #   - /dev/dri/nl-igpu and nl-dgpu (61-nothing-liquid-gpu.rules), so Hyprland can be
 #     told to run on the integrated GPU: a Hyprland holding the NVIDIA GPU open keeps
 #     it awake all the time (the dots' hyprland/gpu.lua does that at login)
-#   - nothing-liquid-gpu-power.service (gpu-power): the GPU follows the power profile:
-#     power saver turns it off completely, balanced on demand, performance adds
-#     Dynamic Boost. power-profiles-daemon is installed if no profile daemon is there.
+#   - nothing-liquid-gpu-power.service (gpu-power): NVIDIA's Dynamic Boost in the
+#     performance profile, off in the others. power-profiles-daemon is installed if
+#     no profile daemon is there
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -39,7 +39,7 @@ case "${1:-}" in
   --status)
     exec bash "$HERE/gpu-power" status ;;
   --uninstall)
-    say "bringing the GPU back if power saver took it off"
+    say "bringing the GPU back if an earlier version took it off the bus"
     [[ -x "$LIB/gpu-power" ]] && sudo "$LIB/gpu-power" on
     sudo systemctl disable --now nothing-liquid-gpu-power.service 2>/dev/null || true
     [[ -f "$SDDM_CONF" ]] && sudo sed -i "s| -config $GREETER_XORG||" "$SDDM_CONF"
@@ -132,7 +132,7 @@ if [[ "$dm" == sddm && "${sddm_server:-x11}" == x11 ]]; then
   fi
 fi
 
-say "the GPU follows the power profile (nothing-liquid-gpu-power.service)"
+say "Dynamic Boost in the performance profile (nothing-liquid-gpu-power.service)"
 sudo install -D -m 755 "$HERE/gpu-power" "$LIB/gpu-power"
 sudo install -D -m 644 "$HERE/nothing-liquid-gpu-power.service" "$UNIT"
 # Dynamic Boost runs in the performance profile only: gpu-power starts and stops it
@@ -146,7 +146,7 @@ sudo systemctl restart nothing-liquid-gpu-power.service
 if [[ -n "$other" ]]; then
   say "done. Log out and in again: from then on Hyprland and the login screen run on the"
   say "  integrated GPU, and the NVIDIA one"
-  say "  powers off: power saver keeps it off, balanced turns it on for apps that use it."
+  say "  is off whenever nothing uses it, and on for the apps that do."
   say "  Run an app on it: prime-run <app>.  See what it's doing: nvidia/install.sh --status"
 fi
 [[ -d /sys/module/nvidia ]] || say "restart the computer to load NVIDIA's driver"

@@ -274,7 +274,7 @@ class Choices:
     font: int = 2  # dot-matrix everywhere: Nothing Liquid's own look
     login: bool = False
     power: bool = True
-    gpu: bool = True  # (NVIDIA laptops) the GPU follows the power profile
+    gpu: bool = True  # (NVIDIA laptops) the NVIDIA GPU off whenever nothing uses it
 
 
 def demo_command(key):
@@ -330,8 +330,8 @@ def plan(c: Choices, s):
     if gpu:
         steps.append(Step("gpu", "Setting up the NVIDIA graphics",
                           ("" if s["nvidia_driver"] else "NVIDIA's driver, and ") +
-                          "the GPU following the power profile: off in power saver, on only for apps that use it "
-                          "in balanced. The desktop runs on the integrated GPU.",
+                          "the NVIDIA GPU off whenever nothing uses it, on for the apps that do. The desktop "
+                          "runs on the integrated GPU.",
                           f"bash {R}/nvidia/install.sh", 20 if s["nvidia_driver"] else 300, skippable=True,
                           skip_note="The NVIDIA GPU stays as it was; run nvidia/install.sh later to set it up."))
     if c.mode == "overlay" and not s["build_tools"]:
@@ -680,9 +680,9 @@ class Window(RunnerUI, Adw.ApplicationWindow):
         prefs.add(login)
         prefs.add(power)
         if s["nvidia_hybrid"]:
-            gpu = Adw.SwitchRow(title="NVIDIA GPU follows the power profile",
-                                subtitle="Power saver turns it off completely; balanced turns it on only for apps "
-                                         "that use it. Saves battery.", active=True)
+            gpu = Adw.SwitchRow(title="NVIDIA GPU off when it's not needed",
+                                subtitle="It powers off whenever no app uses it, and the desktop runs on the "
+                                         "integrated GPU. Saves battery.", active=True)
             if s["gpu_power"]:
                 gpu.set_subtitle("Already set up.")
                 gpu.set_sensitive(False)

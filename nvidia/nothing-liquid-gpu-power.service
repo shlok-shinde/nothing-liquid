@@ -1,5 +1,5 @@
 [Unit]
-Description=Nothing Liquid: the NVIDIA GPU follows the power profile
+Description=Nothing Liquid: NVIDIA's Dynamic Boost in the performance power profile
 Documentation=https://github.com/shlok-shinde/nothing-liquid/tree/nvidia/nvidia
 # (no After= power-profiles-daemon: that one starts after multi-user.target, a loop;
 # gpu-power waits for it on D-Bus instead)
