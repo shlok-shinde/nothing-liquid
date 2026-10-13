@@ -26,7 +26,9 @@ DOTO_URL='https://raw.githubusercontent.com/google/fonts/main/ofl/doto/Doto%5BRO
 PROFILE="$WORK/profile"
 say() { printf '\033[1;31m●\033[0m %s\n' "$*"; }
 
+PKG_LINK=/run/nothing-liquid-iso-pkg   # (pacman.conf splits paths at spaces: WORK/pkg by a name without any)
 cleanup() {
+  rm -f "$PKG_LINK"
   mountpoint -q "$WORK" && umount -R "$WORK"
   rm -rf "$WORK" "$WORK.img"
 }
@@ -60,8 +62,9 @@ while IFS= read -r -d '' f; do
   sed -i 's/Arch Linux install medium/Nothing Liquid installer/g' "$f"
 done < <(find "$PROFILE/efiboot" "$PROFILE/grub" "$PROFILE/syslinux" -type f \( -name '*.conf' -o -name '*.cfg' \) -print0 2>/dev/null)
 # Its downloads in WORK, not in this computer's pacman cache
-sed -i "s|^#\?CacheDir.*|CacheDir = $WORK/pkg/|" "$PROFILE/pacman.conf"
-grep -q '^CacheDir' "$PROFILE/pacman.conf" || sed -i "/^\[options\]/a CacheDir = $WORK/pkg/" "$PROFILE/pacman.conf"
+ln -sfn "$WORK/pkg" "$PKG_LINK"
+sed -i "s|^#\?CacheDir.*|CacheDir = $PKG_LINK/|" "$PROFILE/pacman.conf"
+grep -q '^CacheDir' "$PROFILE/pacman.conf" || sed -i "/^\[options\]/a CacheDir = $PKG_LINK/" "$PROFILE/pacman.conf"
 
 say "a copy of Nothing Liquid (as committed) for the installer to put on the disk"
 repo="$PROFILE/airootfs/usr/share/nothing-liquid/repo"
