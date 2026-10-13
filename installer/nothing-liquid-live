@@ -712,8 +712,8 @@ class Window(RunnerUI, Adw.ApplicationWindow):
             script = HERE / "live/demo-install.sh"
         command = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items()) + f" bash {shlex.quote(str(script))}"
         self.step_index = 0
-        self.step_started = time.time()
-        self.started = time.time()
+        self.step_started = time.monotonic()
+        self.started = time.monotonic()
         self.running = True
         self.runner = Runner(self.log_path, self.on_line, self.on_live, lambda: self.runner.run(command),
                              self.on_done, self.on_prompt, self.on_exit, cwd=str(ROOT))
@@ -726,7 +726,7 @@ class Window(RunnerUI, Adw.ApplicationWindow):
             keys = [s[0] for s in STEPS]
             if m.group(1) in keys:
                 self.step_index = keys.index(m.group(1))
-                self.step_started = time.time()
+                self.step_started = time.monotonic()
                 _, title, detail, _ = STEPS[self.step_index]
                 self.kicker.set_label(f"STEP {self.step_index + 1} OF {len(STEPS)}")
                 self.step_title.set_label(title)
@@ -740,9 +740,9 @@ class Window(RunnerUI, Adw.ApplicationWindow):
         total = sum(s[3] for s in STEPS)
         done = sum(s[3] for s in STEPS[:self.step_index])
         cur = STEPS[self.step_index][3]
-        done += cur * min(0.92, (time.time() - self.step_started) / cur)
+        done += cur * min(0.92, (time.monotonic() - self.step_started) / cur)
         self.dots.set_fraction(done / total)
-        m, s = divmod(int(time.time() - self.started), 60)
+        m, s = divmod(int(time.monotonic() - self.started), 60)
         self.elapsed.set_label(f"{m}:{s:02d}")
         return True
 

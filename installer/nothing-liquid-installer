@@ -774,7 +774,7 @@ class Window(RunnerUI, Adw.ApplicationWindow):
 
         stamp = time.strftime("%Y%m%d-%H%M%S")
         self.log_path = LOGS / f"{self.choices.mode}-{stamp}{'-demo' if DEMO else ''}.log"
-        self.started = time.time()
+        self.started = time.monotonic()
         self.running = True
         self.index = 0
         self.pending_live = None
@@ -792,7 +792,7 @@ class Window(RunnerUI, Adw.ApplicationWindow):
             self.finish(True)
             return
         st = self.steps[self.index]
-        st.started = time.time()
+        st.started = time.monotonic()
         visible = [x for x in self.steps if x.key != "finish"]
         n = visible.index(st) + 1 if st in visible else len(visible)
         self.kicker.set_label(f"STEP {n} OF {len(visible)}")
@@ -811,9 +811,9 @@ class Window(RunnerUI, Adw.ApplicationWindow):
         done = sum(st.seconds for st in self.steps[:self.index])
         if self.index < len(self.steps):
             st = self.steps[self.index]
-            done += st.seconds * min(0.92, (time.time() - st.started) / max(st.seconds, 1)) if st.started else 0
+            done += st.seconds * min(0.92, (time.monotonic() - st.started) / max(st.seconds, 1)) if st.started else 0
         self.dots.set_fraction(done / total)
-        mins, secs = divmod(int(time.time() - self.started), 60)
+        mins, secs = divmod(int(time.monotonic() - self.started), 60)
         self.elapsed.set_label(f"{mins}:{secs:02d}")
         return True
 

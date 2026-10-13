@@ -33,6 +33,16 @@ KEYS = [("SUPER", "Search and open apps"), ("SUPER + Enter", "Terminal"), ("SUPE
         ("CTRL + SUPER + T", "Pick a wallpaper"), ("SUPER + /", "Every shortcut")]
 SUDO_MARK = "NL-SUDO-PASSWORD:"  # sudo's prompt in our session (SUDO_PROMPT), in any language
 
+
+def build_jobs():
+    """Parallel compile jobs this computer has the memory for: one per 1.5 GB, at most one per thread."""
+    try:
+        with open("/proc/meminfo") as f:
+            mem_mb = next(int(l.split()[1]) for l in f if l.startswith("MemTotal:")) // 1024
+    except (OSError, StopIteration, ValueError):
+        return 2
+    return max(1, min(os.cpu_count() or 1, mem_mb // 1536))
+
 # ── one terminal session for all the steps ───────────────────────────────────
 ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 MARK = re.compile(r"@@NL(DONE|READY)(?: (-?\d+))?@@")
@@ -68,8 +78,21 @@ class Runner:
         })
         if "LC_ALL" in env:  # it would override LC_MESSAGES: keep it as LANG instead
             env["LANG"] = env.pop("LC_ALL")
+        # Quickshell is compiled here (C++, up to ~800 MB per compiler): one job per
+        # 1.5 GB of memory, at most one per CPU thread. Ninja's own default (threads + 2)
+        # runs a 4 GB or a 16-thread 8 GB laptop out of memory
+        jobs = str(build_jobs())
+        env.setdefault("CMAKE_BUILD_PARALLEL_LEVEL", jobs)
+        env.setdefault("MAKEFLAGS", f"-j{jobs}")
         pid, fd = pty.fork()
         if pid == 0:
+            try:
+                # If memory runs out anyway, the kernel picks a compiler, not the
+                # session's D-Bus or this window
+                with open("/proc/self/oom_score_adj", "w") as f:
+                    f.write("500")
+            except OSError:
+                pass
             try:
                 os.chdir(self.cwd)
                 os.execvpe("bash", ["bash", "--noprofile", "--norc", "--noediting", "-i"], env)
