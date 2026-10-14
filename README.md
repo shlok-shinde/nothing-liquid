@@ -169,11 +169,27 @@ still opens search with the workspaces. Type to search as usual; `Down` goes
 from the search bar into the apps, the arrow keys move, `Enter` opens. Also
 `qs -c ii ipc call search appDrawerToggle`.
 
-## Hermes Agent in the sidebar
+## The sidebar's assistant: Hermes Agent or OpenClaw
 
-With [Hermes Agent](https://github.com/NousResearch/hermes-agent) installed,
-the left sidebar's AI page is a chat with your own Hermes: its provider, tools,
-memory and skills, nothing configured twice. The shell runs Hermes' own UI
+The first time the left sidebar opens, its AI page asks which agent it should
+have: [Hermes Agent](https://github.com/NousResearch/hermes-agent),
+[OpenClaw](https://openclaw.ai), or nothing (no AI page; the translator
+stays). Picking an agent opens a terminal that installs it and runs its own
+setup, where you choose the AI provider and model and paste that provider's
+API key; the page turns into the chat when it's done. An agent you already
+had is kept without asking. Change it later in *Settings › General ›
+Policies › Sidebar assistant*, or `qs -c ii ipc call assistant choose
+hermes|openclaw|none` (`ask` shows the picker again).
+
+**OpenClaw** goes into `~/.openclaw` (its own Node.js, no root) with its
+gateway as a user service, and the gateway's OpenAI-style chat endpoint on
+(`gateway.http.endpoints.chatCompletions`). The sidebar's chat talks to that:
+OpenClaw's own persona, model, tools and memory; its token is read from
+OpenClaw's config for each message. No answer means the gateway isn't
+running: `openclaw gateway status`, `openclaw gateway start`.
+
+**Hermes Agent** gets the whole sidebar page: a chat with your own Hermes, its
+provider, tools, memory and skills, nothing configured twice. The shell runs Hermes' own UI
 backend, `tui_gateway` (the one its TUI, desktop app and dashboard use), and
 speaks its JSON-RPC over stdio (`services/Hermes.qml`). So the sidebar gets
 what those get:
