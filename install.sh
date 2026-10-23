@@ -96,6 +96,14 @@ known_version() {
 mapfile -t files < <(git -C "$DOTS" diff --name-only --diff-filter=d "$BASE_COMMIT".."$REF" -- dots/)
 # and the files the fork removes (end-4 has them, the fork doesn't): gone from ~/.config too
 mapfile -t gone < <(git -C "$DOTS" diff --name-only --diff-filter=D "$BASE_COMMIT".."$REF" -- dots/)
+# A change the fork made and later undid leaves the file as end-4 has it, so the
+# diff above misses it, but an earlier install may have put the changed version
+# in ~/.config: back to end-4's then, or away if the fork added it and dropped it
+while IFS= read -r f; do
+  if git -C "$DOTS" cat-file -e "$REF:$f" 2>/dev/null; then files+=("$f")
+  elif ! git -C "$DOTS" cat-file -e "$BASE_COMMIT:$f" 2>/dev/null; then gone+=("$f"); fi
+done < <(comm -23 <(git -C "$DOTS" log --format= --name-only --no-merges "$BASE_COMMIT".."$REF" -- dots/ | sort -u) \
+                  <(git -C "$DOTS" diff --name-only "$BASE_COMMIT".."$REF" -- dots/ | sort -u))
 blocked=0
 for f in "${files[@]}" "${gone[@]}"; do
   rel="${f#dots/}"; live="$HOME/$rel"
