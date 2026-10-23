@@ -337,6 +337,13 @@ only when a screen is plugged into one of its ports at login. On many laptops
 HDMI is wired to it, so plug that screen in first, then log in. A laptop switched
 to the NVIDIA GPU alone in its firmware runs Hyprland on it, as it has to.
 
+Firefox likewise: its video decoder loads NVIDIA's graphics driver too, and holds
+the GPU awake while a video plays, though Firefox draws and decodes on the
+integrated GPU. `nvidia/install.sh` gives Firefox a launcher entry
+(`~/.local/share/applications/firefox.desktop`) that leaves NVIDIA's driver out;
+it plays and looks the same. Running `nvidia/install.sh` again refreshes it after
+a Firefox update changes its own entry.
+
 ```
 git clone -b nvidia --recurse-submodules https://github.com/shlok-shinde/nothing-liquid
 cd nothing-liquid

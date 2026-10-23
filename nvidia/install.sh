@@ -30,6 +30,10 @@ MODPROBE=/etc/modprobe.d/nothing-liquid-nvidia.conf
 GREETER_XORG=/etc/nothing-liquid/greeter-xorg.conf
 SDDM_DROPIN=/etc/sddm.conf.d/30-nothing-liquid-gpu.conf
 SDDM_CONF=/etc/sddm.conf
+FIREFOX_DESKTOP=/usr/share/applications/firefox.desktop
+FIREFOX_OVERRIDE="${XDG_DATA_HOME:-$HOME/.local/share}/applications/firefox.desktop"
+FIREFOX_MARK="# Nothing Liquid (nvidia/install.sh): Firefox with Mesa's EGL only, so the NVIDIA GPU can sleep"
+MESA_EGL=/usr/share/glvnd/egl_vendor.d/50_mesa.json
 
 say()  { printf '\033[1m·\033[0m %s\n' "$*"; }
 warn() { printf '\033[31m·\033[0m %s\n' "$*"; }
@@ -44,6 +48,7 @@ case "${1:-}" in
     sudo systemctl disable --now nothing-liquid-gpu-power.service 2>/dev/null || true
     [[ -f "$SDDM_CONF" ]] && sudo sed -i "s| -config $GREETER_XORG||" "$SDDM_CONF"
     sudo rm -f "$UNIT" "$RULES" "$MODPROBE" "$LIB/gpu-power" "$GREETER_XORG" "$SDDM_DROPIN"
+    grep -qxF "$FIREFOX_MARK" "$FIREFOX_OVERRIDE" 2>/dev/null && rm -f "$FIREFOX_OVERRIDE"
     sudo rmdir --ignore-fail-on-non-empty "$LIB" 2>/dev/null || true
     sudo systemctl daemon-reload
     sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=drm
@@ -163,6 +168,21 @@ fi
 sudo systemctl daemon-reload
 sudo systemctl enable nothing-liquid-gpu-power.service >/dev/null
 sudo systemctl restart nothing-liquid-gpu-power.service
+
+# Firefox's video decoder loads every EGL vendor's driver, NVIDIA's first, and holds
+# the NVIDIA GPU open (awake) for as long as it lives, though Firefox draws and decodes
+# on the integrated GPU. Its launcher entry with Mesa's EGL alone: the same Firefox, the
+# NVIDIA GPU asleep. Rewritten from Firefox's own entry each time this runs.
+if [[ -n "$other" && -f "$FIREFOX_DESKTOP" && -f "$MESA_EGL" ]]; then
+  if [[ -e "$FIREFOX_OVERRIDE" ]] && ! grep -qxF "$FIREFOX_MARK" "$FIREFOX_OVERRIDE"; then
+    warn "$FIREFOX_OVERRIDE is your own: left alone (Firefox playing video may keep the NVIDIA GPU awake)"
+  else
+    say "Firefox: video on the integrated GPU only, so the NVIDIA one can sleep meanwhile"
+    mkdir -p "$(dirname "$FIREFOX_OVERRIDE")"
+    { printf '%s\n' "$FIREFOX_MARK"
+      sed "s|^Exec=|Exec=env __EGL_VENDOR_LIBRARY_FILENAMES=$MESA_EGL |" "$FIREFOX_DESKTOP"; } > "$FIREFOX_OVERRIDE"
+  fi
+fi
 
 if [[ -n "$other" ]]; then
   say "done. Log out and in again: from then on Hyprland and the login screen run on the"
