@@ -20,6 +20,9 @@
 #   - nothing-liquid-gpu-power.service (gpu-power): NVIDIA's Dynamic Boost in the
 #     performance profile, off in the others. power-profiles-daemon is installed if
 #     no profile daemon is there
+#   - Firefox without NVIDIA's EGL driver (its launcher entry, and a firefox command
+#     in ~/.local/bin for SUPER+W and terminals), so its video decoder doesn't keep
+#     the NVIDIA GPU awake
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -33,6 +36,8 @@ SDDM_CONF=/etc/sddm.conf
 FIREFOX_DESKTOP=/usr/share/applications/firefox.desktop
 FIREFOX_OVERRIDE="${XDG_DATA_HOME:-$HOME/.local/share}/applications/firefox.desktop"
 FIREFOX_MARK="# Nothing Liquid (nvidia/install.sh): Firefox with Mesa's EGL only, so the NVIDIA GPU can sleep"
+FIREFOX_BIN=/usr/bin/firefox
+FIREFOX_WRAPPER="$HOME/.local/bin/firefox"
 MESA_EGL=/usr/share/glvnd/egl_vendor.d/50_mesa.json
 
 say()  { printf '\033[1m·\033[0m %s\n' "$*"; }
@@ -48,7 +53,9 @@ case "${1:-}" in
     sudo systemctl disable --now nothing-liquid-gpu-power.service 2>/dev/null || true
     [[ -f "$SDDM_CONF" ]] && sudo sed -i "s| -config $GREETER_XORG||" "$SDDM_CONF"
     sudo rm -f "$UNIT" "$RULES" "$MODPROBE" "$LIB/gpu-power" "$GREETER_XORG" "$SDDM_DROPIN"
-    grep -qxF "$FIREFOX_MARK" "$FIREFOX_OVERRIDE" 2>/dev/null && rm -f "$FIREFOX_OVERRIDE"
+    for f in "$FIREFOX_OVERRIDE" "$FIREFOX_WRAPPER"; do
+      grep -qxF "$FIREFOX_MARK" "$f" 2>/dev/null && rm -f "$f"
+    done
     sudo rmdir --ignore-fail-on-non-empty "$LIB" 2>/dev/null || true
     sudo systemctl daemon-reload
     sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=drm
@@ -181,6 +188,31 @@ if [[ -n "$other" && -f "$FIREFOX_DESKTOP" && -f "$MESA_EGL" ]]; then
     mkdir -p "$(dirname "$FIREFOX_OVERRIDE")"
     { printf '%s\n' "$FIREFOX_MARK"
       sed "s|^Exec=|Exec=env __EGL_VENDOR_LIBRARY_FILENAMES=$MESA_EGL |" "$FIREFOX_DESKTOP"; } > "$FIREFOX_OVERRIDE"
+  fi
+fi
+# SUPER+W and terminals start it by name, not through the entry: a firefox command
+# that does the same, where it's found before Firefox's own (prime-run firefox still
+# gets the NVIDIA GPU)
+before_usr_bin() {
+  local IFS=: d
+  for d in $PATH; do
+    [[ "$d" == "$1" ]] && return 0
+    [[ "$d" == /usr/bin ]] && return 1
+  done
+  return 1
+}
+if [[ -n "$other" && -x "$FIREFOX_BIN" && -f "$MESA_EGL" ]] && before_usr_bin "$(dirname "$FIREFOX_WRAPPER")"; then
+  if [[ -e "$FIREFOX_WRAPPER" ]] && ! grep -qxF "$FIREFOX_MARK" "$FIREFOX_WRAPPER"; then
+    warn "$FIREFOX_WRAPPER is your own: left alone (Firefox from SUPER+W may keep the NVIDIA GPU awake)"
+  else
+    mkdir -p "$(dirname "$FIREFOX_WRAPPER")"
+    cat > "$FIREFOX_WRAPPER" <<EOF
+#!/bin/sh
+$FIREFOX_MARK
+[ "\${__NV_PRIME_RENDER_OFFLOAD:-}" = 1 ] || export __EGL_VENDOR_LIBRARY_FILENAMES=$MESA_EGL
+exec $FIREFOX_BIN "\$@"
+EOF
+    chmod 755 "$FIREFOX_WRAPPER"
   fi
 fi
 

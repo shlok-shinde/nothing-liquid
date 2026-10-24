@@ -340,9 +340,11 @@ to the NVIDIA GPU alone in its firmware runs Hyprland on it, as it has to.
 Firefox likewise: its video decoder loads NVIDIA's graphics driver too, and holds
 the GPU awake while a video plays, though Firefox draws and decodes on the
 integrated GPU. `nvidia/install.sh` gives Firefox a launcher entry
-(`~/.local/share/applications/firefox.desktop`) that leaves NVIDIA's driver out;
-it plays and looks the same. Running `nvidia/install.sh` again refreshes it after
-a Firefox update changes its own entry.
+(`~/.local/share/applications/firefox.desktop`) and a `firefox` command
+(`~/.local/bin/firefox`, for SUPER+W and terminals) that leave NVIDIA's driver
+out; it plays and looks the same, and `prime-run firefox` still runs it on the
+NVIDIA GPU. Running `nvidia/install.sh` again refreshes the entry after a Firefox
+update changes its own.
 
 ```
 git clone -b nvidia --recurse-submodules https://github.com/shlok-shinde/nothing-liquid
