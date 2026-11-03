@@ -196,6 +196,11 @@ if [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]]; then
     hyprctl plugin load "$SO" >/dev/null 2>&1 || true
   fi
   hyprctl reload >/dev/null || true
+  # A reload doesn't always load it (after logging in with a build for an older
+  # Hyprland, whose load failed): then load it directly
+  loaded() { hyprctl plugin list 2>/dev/null | grep -q '^Plugin hyprglass'; }
+  for _ in 1 2 3 4 5; do loaded && break; sleep 0.4; done
+  loaded || hyprctl plugin load "$SO" >/dev/null 2>&1 || true
   qs -c ii kill >/dev/null 2>&1 || true
   setsid -f qs -c ii >/dev/null 2>&1 || true
   pkill -USR1 -x kitty 2>/dev/null || true   # open kitty windows re-read kitty.conf (see-through background)
