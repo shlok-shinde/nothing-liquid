@@ -46,8 +46,8 @@ run()  { if ((DRY)); then echo "  would: $*"; else "$@"; fi; }
 # ── 0. sanity ────────────────────────────────────────────────────────────────
 have="$(Hyprland --version 2>/dev/null | sed -n 's/^Hyprland \([0-9.]*\).*/\1/p' | head -1)"
 case "$have" in
-  0.56.*) ;;
-  *) warn "this targets Hyprland 0.56.x (its Lua config and plugin API); found '${have:-none}'"
+  0.57.*) ;;
+  *) warn "this targets Hyprland 0.57.x (its Lua config and plugin API); found '${have:-none}'"
      ((FORCE)) || exit 1 ;;
 esac
 command -v make >/dev/null && [[ -d /usr/include/hyprland ]] || {

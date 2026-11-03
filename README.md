@@ -5,7 +5,7 @@ refraction on every window and panel, a magic-lamp (genie) minimize, and light
 that only appears where you touch the glass, with Nothing OS's dot-matrix type
 and one-red accent. Built on
 [end-4's illogical-impulse](https://github.com/end-4/dots-hyprland) dotfiles
-(Quickshell) for Hyprland 0.56, with a fork of the
+(Quickshell) for Hyprland 0.57, with a fork of the
 [hyprglass](https://github.com/hyprnux/hyprglass) plugin.
 
 ![Glass windows on a bright wallpaper: the lens magnifies what is behind them](docs/media/windows-body-lens.png)
@@ -324,7 +324,7 @@ checks and `./install.sh --dry-run`; neither changes anything).
 ### By hand
 
 Needs a working [end-4 dots-hyprland](https://github.com/end-4/dots-hyprland)
-install (the `ii` shell, Lua Hyprland config) on **Hyprland 0.56.x**, plus what
+install (the `ii` shell, Lua Hyprland config) on **Hyprland 0.57.x**, plus what
 it takes to build a Hyprland plugin: `hyprland` headers (`/usr/include/hyprland`),
 `make`, `g++` and `pkg-config`.
 

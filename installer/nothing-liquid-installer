@@ -48,7 +48,7 @@ LOGS = Path(os.environ.get("XDG_CACHE_HOME") or HOME / ".cache") / "nothing-liqu
 POWER_KEY_CONF = "/etc/systemd/logind.conf.d/10-nothing-liquid-power-key.conf"
 LOGIN_THEME = Path("/usr/share/sddm/themes/nothing-liquid")
 DOTO_URL = "https://raw.githubusercontent.com/google/fonts/main/ofl/doto/Doto%5BROND%2Cwght%5D.ttf"
-HYPRLAND_TARGET = (0, 56)
+HYPRLAND_TARGET = (0, 57)
 APP_ID = "io.github.shlok_shinde.NothingLiquid"  # also the desktop file's name, so docks find its icon
 
 # The choices and tips both installers share (nlui): ACCENTS, FONTS, SHOTS, KEYS
@@ -220,11 +220,11 @@ def checks(s):
         c.append(Check("Hyprland", "ok", f"{vstr(v)} {word}: the version Nothing Liquid is made for"))
     elif v[:2] < HYPRLAND_TARGET:
         c.append(Check("Hyprland", "fail" if not s["end4"] else "warn",
-                       f"{vstr(v)} {word}, but this setup needs 0.56 or newer. "
+                       f"{vstr(v)} {word}, but this setup needs 0.57 or newer. "
                        "Update your system (sudo pacman -Syu) and check again."))
     else:
         c.append(Check("Hyprland", "warn",
-                       f"{vstr(v)} {word}. Nothing Liquid is made for 0.56: the desktop works, but the glass "
+                       f"{vstr(v)} {word}. Nothing Liquid is made for 0.57: the desktop works, but the glass "
                        "effects may not load until they're updated for this version."))
     gpus = s["gpus"]
     if "NVIDIA" in gpus and not s["nvidia_driver"]:
