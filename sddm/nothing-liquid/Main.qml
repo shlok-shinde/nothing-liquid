@@ -125,6 +125,7 @@ Rectangle {
             tint: Qt.rgba(1, 1, 1, 0.18)
             dispersion: 0.2
             shadow: 0.45
+            darkEdge: 0.4 // light on the digits: they are thin
 
             Text {
                 id: clock
@@ -157,6 +158,7 @@ Rectangle {
             adaptiveBoost: root.light ? 0.85 : 0
             tint: root.light ? Qt.rgba(0.98, 0.98, 0.99, 0.45) : Qt.rgba(0.04, 0.04, 0.05, 0.25)
             shadow: root.light ? 0.2 : 0.28
+            darkEdge: root.light ? 0.43 : 0.88
             Rectangle {
                 anchors.fill: parent
                 radius: height / 2
